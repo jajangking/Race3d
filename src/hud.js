@@ -1,0 +1,101 @@
+/** Thin DOM HUD. Kept out of the render loop's hot path (text only changes). */
+
+const $ = (id) => document.getElementById(id);
+
+export class Hud {
+  constructor() {
+    this.el = {
+      root: $('hud'),
+      speedo: $('speedo'),
+      speed: $('speed'),
+      gear: $('gear'),
+      rpmBar: $('rpm-bar')?.firstElementChild,
+      rpm: $('rpm'),
+      session: $('session'),
+      best: $('best'),
+      top: $('top'),
+      tc: $('pill-tc'),
+      esc: $('pill-esc'),
+      abs: $('pill-abs'),
+    };
+    this.last = {};
+    this.topSpeed = 0;
+    this.best100 = null;
+    this._lastSpeed = 0;
+  }
+
+  show() {
+    this.el.root.classList.add('is-live');
+  }
+
+  setAssist(name, on) {
+    const el = this.el[name];
+    if (!el) return;
+    el.classList.toggle('is-off', !on);
+    el.classList.toggle('is-on', on);
+    if (!on) el.classList.remove('is-active');
+  }
+
+  resetRun() {
+    this.topSpeed = 0;
+  }
+
+  setBest(seconds) {
+    this.best100 = seconds;
+  }
+
+  update(car, sessionTime) {
+    const tm = car.telemetry;
+    const speed = Math.round(Math.abs(tm.speedKmh));
+    const gear = tm.gear;
+    const rpm = Math.round(tm.rpm);
+
+    this.topSpeed = Math.max(this.topSpeed, Math.abs(tm.speedKmh));
+
+    if (this.last.speed !== speed) {
+      this.el.speed.textContent = String(speed);
+      this.last.speed = speed;
+    }
+    if (this.last.gear !== gear) {
+      this.el.gear.textContent = gear;
+      this.last.gear = gear;
+    }
+    if (this.last.rpm !== rpm) {
+      this.el.rpm.textContent = String(rpm);
+      this.last.rpm = rpm;
+      const frac = Math.max(0, Math.min(1, rpm / 8250));
+      this.el.speedo?.style.setProperty('--rpm', frac.toFixed(3));
+      if (this.el.rpmBar) this.el.rpmBar.style.width = `${(frac * 100).toFixed(1)}%`;
+      this.el.gear.classList.toggle('is-redline', rpm > 7300);
+    }
+
+    const mm = Math.floor(sessionTime / 60);
+    const ss = Math.floor(sessionTime % 60);
+    const cc = Math.floor((sessionTime % 1) * 100);
+    const t = `${mm}:${String(ss).padStart(2, '0')}.${String(cc).padStart(2, '0')}`;
+    if (this.last.session !== t) {
+      this.el.session.textContent = t;
+      this.last.session = t;
+    }
+
+    const top = `${Math.round(this.topSpeed)} km/h`;
+    if (this.last.top !== top) {
+      this.el.top.textContent = top;
+      this.last.top = top;
+    }
+
+    const best = this.best100 ? `${this.best100.toFixed(2)} s` : '—';
+    if (this.last.best !== best) {
+      this.el.best.textContent = best;
+      this.last.best = best;
+    }
+
+    this.el.tc.classList.toggle('is-active', !!tm.tcActive);
+    this.el.esc.classList.toggle('is-active', !!tm.escActive);
+    // lock-up warning as a stand-in for ABS activity
+    const lock = car.wheels.some(
+      (w) => w.grounded && Math.abs(w.vLong) > 3 && Math.abs(w.slipRatio) > 0.35,
+    );
+    this.el.abs.classList.toggle('is-active', lock);
+  }
+}

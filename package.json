@@ -1,0 +1,27 @@
+{
+  "name": "race3d",
+  "version": "1.0.0",
+  "description": "A 3D racing game with a real raycast-vehicle simulation (Three.js + Rapier)",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview --host",
+    "sim": "node scripts/sim-test.mjs"
+  },
+  "keywords": [
+    "threejs",
+    "rapier",
+    "racing",
+    "vehicle-simulation"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.21.0",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "vite": "^8.3.5"
+  }
+}
