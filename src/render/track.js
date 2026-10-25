@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { buildRacingLine } from '../ai/racingLine.js';
 
 /**
  * Circuit + environment. The physics is a single flat ground plane; everything
@@ -200,17 +201,51 @@ export function createTrack(scene) {
     group.add(dash);
   }
 
-  // kerbs
+  // kerbs - only on racing line (apex/cornering side) per sample
   {
     const kerbTex = kerbTexture();
     const kerbMat = new THREE.MeshStandardMaterial({ map: kerbTex, roughness: 0.75 });
-    for (const s of [-1, 1]) {
-      const kerb = new THREE.Mesh(
-        ribbon(curve, segments, s * (ROAD_HALF_WIDTH + 0.72), 1.3, 0.028, 2.4),
-        kerbMat,
-      );
-      group.add(kerb);
+    const tmpTrack = { curve, length };
+    const line = buildRacingLine(tmpTrack);
+    const N = line.n;
+    const kerbGeo = new THREE.BufferGeometry();
+    const pos = [];
+    const uv = [];
+    const nor = [];
+    const idx = [];
+    const p = new THREE.Vector3();
+    const t = new THREE.Vector3();
+    const side = new THREE.Vector3();
+    let dist = 0;
+    let prev = null;
+    for (let i = 0; i <= N; i++) {
+      const u = i / N;
+      curve.getPointAt(u % 1, p);
+      curve.getTangentAt(u % 1, t);
+      side.set(t.z, 0, -t.x).normalize();
+      if (prev) dist += p.distanceTo(prev);
+      prev = prev ? prev.copy(p) : p.clone();
+      const off = line.offsets[i % N];
+      const kerbSide = off >= 0 ? 1 : -1;
+      const cx = p.x + side.x * kerbSide * (ROAD_HALF_WIDTH + 0.72);
+      const cz = p.z + side.z * kerbSide * (ROAD_HALF_WIDTH + 0.72);
+      const half = side.clone().multiplyScalar(1.3 / 2);
+      pos.push(cx - half.x, 0.028, cz - half.z);
+      pos.push(cx + half.x, 0.028, cz + half.z);
+      nor.push(0, 1, 0, 0, 1, 0);
+      const v = dist / 2.4;
+      uv.push(0, v, 1, v);
+      if (i < N) {
+        const a = i * 2;
+        idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+      }
     }
+    kerbGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    kerbGeo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    kerbGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    kerbGeo.setIndex(idx);
+    const kerb = new THREE.Mesh(kerbGeo, kerbMat);
+    group.add(kerb);
   }
 
   // ------------------------------------------------------- start/finish line
@@ -321,31 +356,7 @@ export function createTrack(scene) {
     group.add(cones, bases);
   }
 
-  // marker boards / distance posts every 50 m on the outside
-  {
-    const postGeo = new THREE.BoxGeometry(0.14, 1.5, 0.14);
-    const postMat = new THREE.MeshStandardMaterial({ color: 0xe8eef4, roughness: 0.6 });
-    const n = Math.floor(length / 50);
-    const inst = new THREE.InstancedMesh(postGeo, postMat, n);
-    const m = new THREE.Matrix4();
-    const p = new THREE.Vector3();
-    const t = new THREE.Vector3();
-    const side = new THREE.Vector3();
-    for (let k = 0; k < n; k++) {
-      const u = (k * 50) / length;
-      curve.getPointAt(u, p);
-      curve.getTangentAt(u, t);
-      side.set(t.z, 0, -t.x).normalize();
-      m.makeTranslation(
-        p.x + side.x * (ROAD_HALF_WIDTH + 4.2),
-        0.75,
-        p.z + side.z * (ROAD_HALF_WIDTH + 4.2),
-      );
-      inst.setMatrixAt(k, m);
-    }
-    inst.castShadow = true;
-    group.add(inst);
-  }
+  // kerb di tikungan (racing line) - sudah di atas, hapus tiang/pagar rambu
 
   return {
     group,

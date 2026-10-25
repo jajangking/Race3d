@@ -7,6 +7,7 @@ import { CAR } from './vehicle/config.js';
 import { createTrack } from './render/track.js';
 import { createCarMesh } from './render/carMesh.js';
 import { createSkidMarks } from './render/skidMarks.js';
+import { createTireSmoke } from './render/tireSmoke.js';
 import { ChaseCamera } from './render/chaseCamera.js';
 import { Input } from './input.js';
 import { Hud } from './hud.js';
@@ -191,6 +192,7 @@ for (let i = 0; i < OPPONENT_COUNT; i++) {
 world.step();
 
 const skidMarks = createSkidMarks(scene);
+const tireSmoke = createTireSmoke(scene);
 
 const chase = new ChaseCamera(camera, track);
 chase.snap(car);
@@ -337,6 +339,7 @@ function respawn() {
     o.driver.sensors._empty();
   }
   skidMarks.reset();
+  tireSmoke.reset();
   aiTick = 0;
   world.step();
   chase.snap(car);
@@ -427,6 +430,7 @@ function frame(now) {
 
   carMesh.update(car);
   skidMarks.update(car);
+  tireSmoke.update(dt, car);
   chase.update(dt, car);
 
   // shadow frustum follows the car
