@@ -8,7 +8,12 @@
     "dev": "vite --host",
     "build": "vite build",
     "preview": "vite preview --host",
-    "sim": "node scripts/sim-test.mjs"
+    "sim": "node scripts/sim-test.mjs",
+    "ai": "node scripts/ai-lap-test.mjs",
+    "ai:recover": "node scripts/ai-recovery-test.mjs",
+    "ai:start": "node scripts/ai-start-test.mjs",
+    "ai:traffic": "node scripts/ai-traffic-test.mjs",
+    "ai:field": "node scripts/ai-field-test.mjs"
   },
   "keywords": [
     "threejs",

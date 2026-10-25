@@ -14,6 +14,7 @@ import { AIDriver } from './ai/aiDriver.js';
 
 // ------------------------------------------------------------------ physics
 const FIXED_DT = 1 / 120;
+let aiTick = 0;
 
 await RAPIER.init();
 
@@ -131,21 +132,63 @@ const carMesh = createCarMesh(CAR);
 scene.add(carMesh.root);
 carMesh.root.visible = true;
 
-// opponent AI
-const opponentSpawn = spawn.clone();
-const tanSpawn = track.startTangent.clone().setY(0).normalize();
-opponentSpawn.copy(spawn).add(tanSpawn.clone().multiplyScalar(5));
-const opponent = new Vehicle({
-  RAPIER,
-  world,
-  position: opponentSpawn,
-  quaternion: track.startQuat,
-});
+// ---------------------------------------------------------------- opponents
+// A small field of AI cars on a staggered grid. Each one has a slightly
+// different speed target so the pack spreads out and they actually overtake.
+const OPPONENT_COUNT = 10;
+const OPPONENT_COLORS = [
+  0xe23b2f, 0xf08a24, 0xf2c230, 0x2fae58, 0x18b6a6,
+  0x7a4fd0, 0xd84a9f, 0xe8eef4, 0x6b7480, 0x8c1b1b,
+];
+const GRID_ROW_GAP = 12;   // m between rows
+const GRID_COL_OFFSET = 3; // m left/right of the centreline
+
+// Deterministic driver setups. Pace scales the shared grip-limited profile,
+// lineScale is how much of the racing line a car uses, and laneBias gives the
+// pack a natural spread instead of ten identical trajectories.
+const OPPONENT_PACE = [1.005, 1.02, 0.985, 1.03, 0.995, 1.015, 0.98, 1.025, 1.0, 1.01];
+const OPPONENT_LINE = [0.96, 1.0, 0.92, 0.99, 0.94, 0.97, 0.9, 0.98, 0.95, 0.93];
+const OPPONENT_BIAS = [0.2, -0.25, -0.4, 0.4, 0.0, -0.1, 0.35, -0.35, 0.1, -0.2];
+
+function gridPose(baseU, distance, lateral) {
+  const u = (baseU + distance / track.length + 1) % 1;
+  const p = track.curve.getPointAt(u, new THREE.Vector3());
+  const t = track.curve.getTangentAt(u, new THREE.Vector3()).setY(0).normalize();
+  const right = new THREE.Vector3(t.z, 0, -t.x);
+  const pos = p.clone().addScaledVector(right, lateral).setY(0.48);
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), t);
+  return { pos, q, u };
+}
+
+const opponents = [];
+for (let i = 0; i < OPPONENT_COUNT; i++) {
+  const row = Math.floor(i / 2);
+  const col = i % 2;
+  const slot = gridPose(0, GRID_ROW_GAP * (row + 1), col === 0 ? -GRID_COL_OFFSET : GRID_COL_OFFSET);
+  const opponentCar = new Vehicle({
+    RAPIER,
+    world,
+    position: slot.pos,
+    quaternion: slot.q,
+  });
+  const paint = OPPONENT_COLORS[i];
+  const paintDark = new THREE.Color(paint).multiplyScalar(0.62).getHex();
+  const mesh = createCarMesh({ ...CAR, paint, paintDark, simple: true });
+  scene.add(mesh.root);
+  // laneOffset is only used during the launch phase: it holds the grid
+  // column until the field is rolling, then the racing line takes over.
+  const laneOffset = (col === 0 ? -GRID_COL_OFFSET : GRID_COL_OFFSET) + (((i * 5) % 7) - 3) * 0.18;
+  const driver = new AIDriver(opponentCar, track, {
+    enabled: true,
+    pace: OPPONENT_PACE[i],
+    lineScale: OPPONENT_LINE[i],
+    laneBias: OPPONENT_BIAS[i],
+    laneOffset,
+  }, world);
+  driver.u = slot.u;
+  opponents.push({ car: opponentCar, mesh, driver, laneOffset });
+}
 world.step();
-const opponentMesh = createCarMesh({ ...CAR });
-scene.add(opponentMesh.root);
-opponentMesh.root.visible = true;
-const ai = new AIDriver(opponent, track, { enabled: true }, world);
 
 const skidMarks = createSkidMarks(scene);
 
@@ -266,21 +309,35 @@ function respawn() {
   );
   car.reset(new THREE.Vector3(_nearest.x, 0.48, _nearest.z), q);
   car.drivetrain.gear = 1;
-  // respawn opponent - spawn in front on track
-  const ou = (u + 0.02) % 1;
-  track.curve.getPointAt(ou, _nearest);
-  track.curve.getTangentAt(ou, _tan);
-  const oq = new THREE.Quaternion().setFromUnitVectors(
-    new THREE.Vector3(0, 0, 1),
-    _tan.clone().setY(0).normalize(),
-  );
-  opponent.reset(new THREE.Vector3(_nearest.x, 0.48, _nearest.z), oq);
-  if (opponent.drivetrain) { opponent.drivetrain.gear = 1; opponent.drivetrain.shiftTimer = 0; opponent.drivetrain.shiftCooldown = 0; }
-  ai.mode = 'race';
-  ai.stuckTime = 0;
-  ai.recoverTime = 0;
-  ai.spawnGrace = 0;
+  // put the whole field back on a grid ahead of the player
+  for (let i = 0; i < opponents.length; i++) {
+    const row = Math.floor(i / 2);
+    const col = i % 2;
+    const slot = gridPose(u, GRID_ROW_GAP * (row + 1), col === 0 ? -GRID_COL_OFFSET : GRID_COL_OFFSET);
+    const o = opponents[i];
+    o.car.reset(slot.pos, slot.q);
+    o.car.drivetrain.gear = 1;
+    o.car.drivetrain.shiftTimer = 0;
+    o.car.drivetrain.shiftCooldown = 0;
+    o.driver.mode = 'race';
+    o.driver.u = (u + (GRID_ROW_GAP * (row + 1)) / track.length) % 1;
+    o.driver.spawnGrace = 0;
+    o.driver.stuckTime = 0;
+    o.driver.blockedTime = 0;
+    o.driver.idleTime = 0;
+    o.driver.recoverTime = 0;
+    o.driver.flippedTime = 0;
+    o.driver.avoidSide = 0;
+    o.driver.avoidHold = 0;
+    o.driver.prevError = 0;
+    o.driver.lastSpeed = 0;
+    o.driver._lastBlocking = o.driver.sensors.maxDist;
+    o.driver._closing = 0;
+    o.driver.sensors._cooldown = 0;
+    o.driver.sensors._empty();
+  }
   skidMarks.reset();
+  aiTick = 0;
   world.step();
   chase.snap(car);
   launchState = 'armed';
@@ -305,6 +362,10 @@ document.addEventListener('visibilitychange', () => {
 // --------------------------------------------------------------- main loop
 const clock = { last: performance.now() };
 let accumulator = 0;
+// Opponents run their vehicle forces at 60 Hz while the Rapier world still
+// steps at 120 Hz. Rapier keeps the last applied force between steps, so the
+// car effectively gets the same impulse for a fraction of the CPU cost. This
+// is what makes ten full raycast-vehicle opponents viable on a phone.
 
 const idle = { throttle: 0, brake: 0, steer: 0, handbrake: false };
 
@@ -332,8 +393,14 @@ function frame(now) {
     let steps = 0;
     while (accumulator >= FIXED_DT && steps < 8) {
       car.update(FIXED_DT, state);
-      const aiState = ai.update(FIXED_DT);
-      opponent.update(FIXED_DT, aiState);
+      if ((aiTick & 1) === 0) {
+        for (let i = 0; i < opponents.length; i++) {
+          const o = opponents[i];
+          const aiState = o.driver.update(FIXED_DT * 2);
+          o.car.update(FIXED_DT * 2, aiState);
+        }
+      }
+      aiTick++;
       world.step();
       accumulator -= FIXED_DT;
       steps++;
@@ -349,13 +416,16 @@ function frame(now) {
   carMesh.root.position.set(pVis.x, pVis.y, pVis.z);
   carMesh.root.quaternion.set(qVis.x, qVis.y, qVis.z, qVis.w);
 
-  const op = opponent.body.translation();
-  const oq = opponent.body.rotation();
-  opponentMesh.root.position.set(op.x, op.y, op.z);
-  opponentMesh.root.quaternion.set(oq.x, oq.y, oq.z, oq.w);
+  for (let i = 0; i < opponents.length; i++) {
+    const o = opponents[i];
+    const op = o.car.body.translation();
+    const oq = o.car.body.rotation();
+    o.mesh.root.position.set(op.x, op.y, op.z);
+    o.mesh.root.quaternion.set(oq.x, oq.y, oq.z, oq.w);
+    o.mesh.update(o.car);
+  }
 
   carMesh.update(car);
-  opponentMesh.update(opponent);
   skidMarks.update(car);
   chase.update(dt, car);
 
@@ -377,4 +447,4 @@ carMesh.update(car);
 requestAnimationFrame(frame);
 
 // exposed for debugging from the console
-window.race3d = { car, world, scene, camera, chase, input, respawn, begin, track };
+window.race3d = { car, opponents, world, scene, camera, chase, input, respawn, begin, track };

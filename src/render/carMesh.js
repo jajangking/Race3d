@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CAR } from '../vehicle/config.js';
 
 /**
@@ -29,6 +30,72 @@ function box(w, h, d, material, x = 0, y = 0, z = 0) {
   mesh.position.set(x, y, z);
   mesh.castShadow = true;
   return mesh;
+}
+
+/**
+ * Bake a group's static meshes down to one mesh per material. A car is made
+ * of ~85 little meshes; with ten opponents plus the player that is ~935 draw
+ * calls per frame, which murders a phone GPU. Merging keeps the same look but
+ * cuts the car to a few dozen calls.
+ *
+ * Moving sub-groups (wheels, steering wheel) are merged independently, so
+ * their animation still works. Transparent parts are left alone for correct
+ * sorting.
+ */
+function mergeByMaterial(group, skip = null) {
+  group.updateWorldMatrix(true, true);
+  const inv = new THREE.Matrix4().copy(group.matrixWorld).invert();
+  const buckets = new Map();
+
+  group.traverse((obj) => {
+    if (!obj.isMesh || obj.material?.transparent) return;
+    if (skip) {
+      let p = obj;
+      while (p && p !== group) {
+        if (skip.has(p)) return;
+        p = p.parent;
+      }
+    }
+    const key = obj.material.uuid;
+    if (!buckets.has(key)) buckets.set(key, { material: obj.material, meshes: [] });
+    buckets.get(key).meshes.push(obj);
+  });
+
+  const matrix = new THREE.Matrix4();
+  for (const { material, meshes } of buckets.values()) {
+    if (meshes.length < 2) continue;
+    const geoms = [];
+    let castShadow = false;
+    let receiveShadow = false;
+    for (const mesh of meshes) {
+      matrix.multiplyMatrices(inv, mesh.matrixWorld);
+      let geo = mesh.geometry.clone();
+      if (geo.index) geo = geo.toNonIndexed();
+      geo.applyMatrix4(matrix);
+      geoms.push(geo);
+      castShadow = castShadow || mesh.castShadow;
+      receiveShadow = receiveShadow || mesh.receiveShadow;
+    }
+    const merged = mergeGeometries(geoms, false);
+    for (const geo of geoms) geo.dispose();
+    if (!merged) continue;
+
+    merged.computeBoundingSphere();
+    const mesh = new THREE.Mesh(merged, material);
+    mesh.castShadow = castShadow;
+    mesh.receiveShadow = receiveShadow;
+    group.add(mesh);
+    for (const old of meshes) {
+      // A merged mesh can itself have mesh children (the steering-wheel hub
+      // carries its centre cap). Keep those alive by moving them up to the
+      // group before the parent disappears.
+      if (old.children.length > 0) {
+        for (const child of [...old.children]) group.attach(child);
+      }
+      old.parent.remove(old);
+      old.geometry.dispose();
+    }
+  }
 }
 
 /** Side-profile extrusion: x = length (nose at +x), y = height. */
@@ -134,7 +201,7 @@ function buildSteeringWheel() {
   return { mount, wheel };
 }
 
-function buildWheel(cfg) {
+function buildWheel(cfg, simple = false) {
   const R = cfg.wheel.radius;
   const W = cfg.wheel.width;
 
@@ -164,6 +231,11 @@ function buildWheel(cfg) {
   face.rotation.z = Math.PI / 2;
   face.castShadow = true;
   spin.add(face);
+
+  // AI cars only need the silhouette and the rim at racing distance; the
+  // spokes, disc and caliper are ten extra draw calls per car for pixels
+  // nobody can resolve.
+  if (simple) return { steer, spin };
 
   const hubMat = mat(0x2a2e33, { roughness: 0.5, metalness: 0.7 });
   const hub = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.2, R * 0.2, W * 1.12, 14), hubMat);
@@ -200,6 +272,7 @@ function buildWheel(cfg) {
 }
 
 export function createCarMesh(cfg = CAR) {
+  const simple = cfg.simple === true;
   const root = new THREE.Group();
   root.name = 'car';
 
@@ -208,8 +281,8 @@ export function createCarMesh(cfg = CAR) {
   body.position.y = -RIDE_HEIGHT;
   root.add(body);
 
-  const paint = mat(PAINT, { roughness: 0.26, metalness: 0.62, envMapIntensity: 1.1 });
-  const paintDark = mat(PAINT_DARK, { roughness: 0.32, metalness: 0.6 });
+  const paint = mat(cfg.paint ?? PAINT, { roughness: 0.26, metalness: 0.62, envMapIntensity: 1.1 });
+  const paintDark = mat(cfg.paintDark ?? PAINT_DARK, { roughness: 0.32, metalness: 0.6 });
   const carbon = mat(CARBON, { roughness: 0.38, metalness: 0.5 });
   const trim = mat(TRIM, { roughness: 0.72, metalness: 0.2 });
   const glass = mat(0xbfd9ff, {
@@ -240,11 +313,14 @@ export function createCarMesh(cfg = CAR) {
   roof.castShadow = true;
   body.add(roof);
 
-  const steeringWheel = buildSteeringWheel();
-  steeringWheel.mount.position.set(0.36, 0.96, 0.78);
-  steeringWheel.mount.rotation.set(-1.26, 0.1, 0.16);
-  steeringWheel.mount.scale.set(1.16, 1.16, 1.16);
-  body.add(steeringWheel.mount);
+  let steeringWheel = null;
+  if (!simple) {
+    steeringWheel = buildSteeringWheel();
+    steeringWheel.mount.position.set(0.36, 0.96, 0.78);
+    steeringWheel.mount.rotation.set(-1.26, 0.1, 0.16);
+    steeringWheel.mount.scale.set(1.16, 1.16, 1.16);
+    body.add(steeringWheel.mount);
+  }
 
   // side skirts
   for (const s of [-1, 1]) {
@@ -312,7 +388,7 @@ export function createCarMesh(cfg = CAR) {
   // ---------------------------------------------------------------- wheels
   const wheelMeshes = [];
   for (let i = 0; i < 4; i++) {
-    const w = buildWheel(cfg);
+    const w = buildWheel(cfg, simple);
     root.add(w.steer);
     wheelMeshes.push(w);
   }
@@ -331,6 +407,12 @@ export function createCarMesh(cfg = CAR) {
   blob.position.y = -RIDE_HEIGHT + 0.015;
   blob.renderOrder = 1;
   root.add(blob);
+
+  // Merge after every part exists. The steering wheel has to keep its own
+  // hierarchy because update() rotates it, so it is excluded from the body.
+  if (steeringWheel) mergeByMaterial(steeringWheel.wheel);
+  for (const w of wheelMeshes) mergeByMaterial(w.spin);
+  mergeByMaterial(body, steeringWheel ? new Set([steeringWheel.mount]) : null);
 
   return {
     root,
@@ -351,8 +433,10 @@ export function createCarMesh(cfg = CAR) {
         visual.spin.rotation.x = wheel.spinAngle;
       }
 
-      const steer = car.telemetry.steer !== undefined ? car.telemetry.steer : car.steerAngle;
-      steeringWheel.wheel.rotation.z = steer * 2.4;
+      if (steeringWheel) {
+        const steer = car.telemetry.steer !== undefined ? car.telemetry.steer : car.steerAngle;
+        steeringWheel.wheel.rotation.z = steer * 2.4;
+      }
 
       // very subtle brake-light glow
       const braking = car.telemetry.brake > 0.05 || car.telemetry.handbrake;
