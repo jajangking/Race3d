@@ -260,10 +260,14 @@ export class Input {
     let brake = 0;
     let handbrake = false;
 
+    // Steering sign convention: POSITIVE steer input turns the car RIGHT
+    // (vehicle.js applies wheel.steer as _fwd = (sin, 0, cos) in body space,
+    // +X = right). The AI and the gamepad already follow this; the keyboard
+    // and touch slider used to be inverted (A turned the car right).
     const tLeft = this.touch.left || 0;
     const tRight = this.touch.right || 0;
-    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft') || tLeft > 0) steer += tLeft || 1;
-    if (this.keys.has('KeyD') || this.keys.has('ArrowRight') || tRight > 0) steer -= tRight || 1;
+    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft') || tLeft > 0) steer -= tLeft || 1;
+    if (this.keys.has('KeyD') || this.keys.has('ArrowRight') || tRight > 0) steer += tRight || 1;
 
     const now = performance.now();
     if (this.touch.throttle) {

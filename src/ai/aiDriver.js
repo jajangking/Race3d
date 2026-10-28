@@ -107,6 +107,25 @@ export class AIDriver {
         bestIdx = idx;
       }
     }
+    // The local window only spans ~+/-90 m. If nothing that close was found,
+    // the car is far off the track (long slide, infield crossover, teleport)
+    // and the window would return the nearest sample *somewhere else on the
+    // circuit* - often the opposite side of it. _snapToTrack() would then
+    // launch the car to a wrong location. Fall back to a global search,
+    // which is ~400 distance checks and only happens in that rare case.
+    if (bestD > 60 * 60) {
+      bestD = Infinity;
+      for (let idx = 0; idx < n; idx++) {
+        const p = samples[idx];
+        const dx = p.x - pos.x;
+        const dz = p.z - pos.z;
+        const d = dx * dx + dz * dz;
+        if (d < bestD) {
+          bestD = d;
+          bestIdx = idx;
+        }
+      }
+    }
 
     // Project onto the two chords that touch the best sample. Snapping to the
     // nearest sample alone would quantise u to 3.3 m and make the steering
