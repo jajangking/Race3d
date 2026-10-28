@@ -66,6 +66,10 @@ export class Input {
         case 'KeyH':
           this._emit('help');
           break;
+        case 'KeyX':
+        case 'KeyO':
+          this._emit('focus');
+          break;
         case 'Enter':
           this._emit('start');
           break;

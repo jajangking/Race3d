@@ -9,6 +9,7 @@ import { createCarMesh } from './render/carMesh.js';
 import { createSkidMarks } from './render/skidMarks.js';
 import { createTireSmoke } from './render/tireSmoke.js';
 import { ChaseCamera } from './render/chaseCamera.js';
+import { SpectatorCamera } from './render/spectatorCamera.js';
 import { Input } from './input.js';
 import { Hud } from './hud.js';
 import { AIDriver } from './ai/aiDriver.js';
@@ -197,6 +198,14 @@ const tireSmoke = createTireSmoke(scene);
 const chase = new ChaseCamera(camera, track);
 chase.snap(car);
 
+// Spectator (AI vs AI) mode: the player's car joins the field as the 11th AI
+// car and the player watches with TV / orbit / cinematic / drone cameras.
+const spectator = new SpectatorCamera(camera, canvas);
+let spectate = false;
+let focusIdx = 0;
+let lastLeaderIdx = 0;
+const race = { laps: [], prevU: [], progress: [] };
+
 // --------------------------------------------------------------------- input
 const input = new Input();
 const hud = new Hud();
@@ -205,7 +214,26 @@ hud.setAssist('esc', car.assists.esc);
 hud.el.abs.textContent = 'LOCK';
 
 input.on('respawn', () => respawn());
-input.on('camera', () => chase.cycle());
+
+const cammodeEl = document.getElementById('cammode');
+function cycleCamera() {
+  if (spectate) {
+    const mode = spectator.cycle();
+    hud.setCamMode(spectator.label);
+    document.body.classList.toggle('is-cinematic', mode === 'cinematic');
+  } else {
+    chase.cycle();
+  }
+}
+function cycleFocus() {
+  if (!spectate || opponents.length === 0) return;
+  focusIdx = (focusIdx + 1) % opponents.length;
+  spectator.refocus(opponents[focusIdx].car);
+}
+input.on('camera', cycleCamera);
+input.on('focus', cycleFocus);
+document.getElementById('btn-cam')?.addEventListener('click', cycleCamera);
+document.getElementById('btn-car')?.addEventListener('click', cycleFocus);
 input.on('tc', () => {
   car.assists.tc = !car.assists.tc;
   hud.setAssist('tc', car.assists.tc);
@@ -222,32 +250,62 @@ let running = true;
 
 const intro = document.getElementById('intro');
 const startBtn = document.getElementById('start');
+const startWatchBtn = document.getElementById('start-watch');
 
-function begin() {
+function begin(mode = 'drive') {
   if (started) return;
   started = true;
+  spectate = mode === 'spectate';
   if (intro) intro.classList.add('is-hidden');
   hud.show();
   document.body.classList.add('is-playing');
+  if (spectate) {
+    // the player's car becomes the 11th AI car: same Vehicle, same driver
+    // class, just a different paint. The field races itself.
+    const driver = new AIDriver(car, track, {
+      enabled: true,
+      pace: 1.0,
+      lineScale: 0.97,
+      laneBias: 0,
+      laneOffset: 0,
+    }, world);
+    driver.u = 0;
+    opponents.push({ car, mesh: carMesh, driver, laneOffset: 0, isPlayer: true });
+    race.laps = opponents.map(() => 0);
+    race.prevU = opponents.map(() => 0);
+    race.progress = opponents.map(() => 0);
+    document.body.classList.add('is-spectate');
+    spectator.enabled = true;
+    hud.setCamMode(spectator.label);
+    hud.buildStandings(opponents.map((o, i) => ({
+      name: o.isPlayer ? 'YOU' : String(i).padStart(2, '0'),
+      color: o.isPlayer ? 0x1f6bff : OPPONENT_COLORS[i],
+    })));
+  }
   sessionTime = 0;
   respawn();
   clock.last = performance.now();
 }
 
-if (startBtn) {
-  startBtn.addEventListener('click', begin, { passive: true });
-  startBtn.addEventListener('touchend', (e) => {
+function bindStart(el, mode) {
+  if (!el) return;
+  el.addEventListener('click', () => begin(mode), { passive: true });
+  el.addEventListener('touchend', (e) => {
     e.preventDefault();
-    begin();
+    begin(mode);
   }, { passive: false });
 }
-input.on('start', begin);
+bindStart(startBtn, 'drive');
+bindStart(startWatchBtn, 'spectate');
+input.on('start', () => begin('drive'));
 
 // handy for headless screenshots / automated checks
 const params = new URLSearchParams(location.search);
 const autoThrottle = params.get('throttle');
 const autoSteer = Number(params.get('steer') ?? 0);
-if (params.has('auto')) setTimeout(begin, 30);
+if (params.has('auto')) {
+  setTimeout(() => begin(params.get('mode') === 'spectate' ? 'spectate' : 'drive'), 30);
+}
 if (params.has('cam')) chase.mode = Number(params.get('cam'));
 
 document.getElementById('respawn').addEventListener('click', () => respawn());
@@ -337,12 +395,22 @@ function respawn() {
     o.driver._closing = 0;
     o.driver.sensors._cooldown = 0;
     o.driver.sensors._empty();
+    if (spectate) {
+      race.laps[i] = 0;
+      race.prevU[i] = o.driver.u;
+      race.progress[i] = o.driver.u;
+    }
   }
   skidMarks.reset();
   tireSmoke.reset();
   aiTick = 0;
   world.step();
-  chase.snap(car);
+  if (spectate) {
+    // snap the spectator camera onto the field (focus car on the next frame)
+    spectator.initialised = false;
+  } else {
+    chase.snap(car);
+  }
   launchState = 'armed';
 }
 
@@ -361,6 +429,35 @@ document.addEventListener('visibilitychange', () => {
   running = !document.hidden;
   clock.last = performance.now();
 });
+
+// ------------------------------------------------------- spectator race state
+let lastStandingsAt = 0;
+
+/** Track laps/progress for every car in the field (spectator mode). */
+function refreshRace() {
+  let leader = 0;
+  for (let i = 0; i < opponents.length; i++) {
+    const u = opponents[i].driver.u;
+    const p = race.prevU[i];
+    if (p > 0.85 && u < 0.15) race.laps[i]++;
+    else if (p < 0.15 && u > 0.85) race.laps[i] = Math.max(0, race.laps[i] - 1);
+    race.prevU[i] = u;
+    race.progress[i] = race.laps[i] + u;
+    if (i > 0 && race.progress[i] > race.progress[leader]) leader = i;
+  }
+  lastLeaderIdx = leader;
+}
+
+function buildStandingsRows(focusNow) {
+  const order = opponents.map((_, i) => i);
+  order.sort((a, b) => race.progress[b] - race.progress[a]);
+  return order.map((idx, rank) => ({
+    idx,
+    rank,
+    lap: race.laps[idx] + 1,
+    isFocus: idx === focusNow,
+  }));
+}
 
 // --------------------------------------------------------------- main loop
 const clock = { last: performance.now() };
@@ -383,19 +480,24 @@ function frame(now) {
   clock.last = now;
 
   let state = idle;
+  let focusCar = car;
   if (started) {
-    state = input.update(dt);
-    if (autoThrottle !== null) {
-      state.throttle = Number(autoThrottle) || 1;
-      state.steer = autoSteer;
+    if (!spectate) {
+      state = input.update(dt);
+      if (autoThrottle !== null) {
+        state.throttle = Number(autoThrottle) || 1;
+        state.steer = autoSteer;
+      }
     }
     sessionTime += dt;
 
-    // fixed-step physics with a spiral-of-death guard
+    // fixed-step physics with a spiral-of-death guard. In spectator mode the
+    // player's car is in `opponents` (the 11th AI), so the single loop below
+    // drives every car in the field.
     accumulator += dt;
     let steps = 0;
     while (accumulator >= FIXED_DT && steps < 8) {
-      car.update(FIXED_DT, state);
+      if (!spectate) car.update(FIXED_DT, state);
       if ((aiTick & 1) === 0) {
         for (let i = 0; i < opponents.length; i++) {
           const o = opponents[i];
@@ -411,7 +513,19 @@ function frame(now) {
     if (steps === 8) accumulator = 0;
 
     trackLaunch(dt, car.telemetry);
-    hud.update(car, sessionTime);
+
+    if (spectate) {
+      refreshRace();
+      const fi = spectator.mode === 'tv' ? lastLeaderIdx : focusIdx;
+      focusCar = opponents[fi].car;
+      hud.update(focusCar, sessionTime);
+      if (performance.now() - lastStandingsAt > 250) {
+        lastStandingsAt = performance.now();
+        hud.updateStandings(buildStandingsRows(fi));
+      }
+    } else {
+      hud.update(car, sessionTime);
+    }
   }
 
   const pVis = car.body.translation();
@@ -431,7 +545,8 @@ function frame(now) {
   carMesh.update(car);
   skidMarks.update(car);
   tireSmoke.update(dt, car);
-  chase.update(dt, car);
+  if (started && spectate) spectator.update(dt, focusCar);
+  else if (!spectate) chase.update(dt, car);
 
   // shadow frustum follows the car
   const p = car.body.translation();
