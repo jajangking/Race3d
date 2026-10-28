@@ -25,7 +25,11 @@ const LINE_STRENGTH = 1.0;    // keep the line close to the centreline; the
                                // shortest path alone cuts too tightly through
                                // this track's long, constant-radius bends
 
-const LAT_GRIP_G = 1.4;       // used lateral grip, tyres peak around 1.45 g
+// Target lateral grip for the speed profile. The tyres peak around 1.45 g
+// but the driver controller always has some transient error, so the profile
+// runs ~10% inside the limit: tight corners (R < 30 m) otherwise get
+// understeered wide onto the grass.
+const LAT_GRIP_G = 1.25;
 const BRAKE_MS2 = 9.0;
 const MAX_SPEED_MS = 205 / 3.6;
 

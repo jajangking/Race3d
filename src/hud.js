@@ -17,11 +17,16 @@ export class Hud {
       tc: $('pill-tc'),
       esc: $('pill-esc'),
       abs: $('pill-abs'),
+      cammode: $('cammode'),
+      standings: $('standings'),
+      standingsBody: $('standings-body'),
     };
     this.last = {};
     this.topSpeed = 0;
     this.best100 = null;
     this._lastSpeed = 0;
+    this.standRows = null;
+    this._standingsSig = null;
   }
 
   show() {
@@ -38,6 +43,67 @@ export class Hud {
 
   resetRun() {
     this.topSpeed = 0;
+  }
+
+  /** Label of the active camera (spectator mode). */
+  setCamMode(label) {
+    if (!this.el.cammode) return;
+    if (this.last.cammode !== label) {
+      this.el.cammode.textContent = label;
+      this.last.cammode = label;
+    }
+  }
+
+  /**
+   * Build the spectator leaderboard once. meta[i] = { name, color } for the
+   * car at field index i (the player's car is flagged by name 'YOU').
+   */
+  buildStandings(meta) {
+    const body = this.el.standingsBody;
+    if (!body) return;
+    body.innerHTML = '';
+    this.standRows = meta.map((m) => {
+      const row = document.createElement('div');
+      row.className = 'standings__row';
+      const pos = document.createElement('span');
+      pos.className = 'standings__pos';
+      const dot = document.createElement('span');
+      dot.className = 'standings__dot';
+      dot.style.background = `#${m.color.toString(16).padStart(6, '0')}`;
+      const name = document.createElement('span');
+      name.className = 'standings__name';
+      name.textContent = m.name;
+      const lap = document.createElement('span');
+      lap.className = 'standings__lap';
+      row.append(pos, dot, name, lap);
+      if (m.name === 'YOU') row.classList.add('is-player');
+      body.appendChild(row);
+      return row;
+    });
+    if (this.el.standings) this.el.standings.hidden = false;
+    this._standingsSig = null;
+  }
+
+  /**
+   * Update the leaderboard. rows = [{ idx, rank, lap, isFocus }] sorted by
+   * rank. DOM is only touched when something actually changed (~4 Hz).
+   */
+  updateStandings(rows) {
+    if (!this.standRows) return;
+    const sig = rows
+      .map((r) => r.rank + '|' + r.idx + '|' + r.lap + (r.isFocus ? '1' : '0'))
+      .join(';');
+    if (sig === this._standingsSig) return;
+    this._standingsSig = sig;
+    for (const r of rows) {
+      const el = this.standRows[r.idx];
+      if (!el) continue;
+      el.children[0].textContent = String(r.rank + 1).padStart(2, '0');
+      el.children[3].textContent = 'LAP ' + r.lap;
+      el.classList.toggle('is-focus', r.isFocus);
+      // re-appending in rank order re-sorts the list
+      this.el.standingsBody.appendChild(el);
+    }
   }
 
   setBest(seconds) {

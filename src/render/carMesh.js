@@ -164,6 +164,26 @@ function cabinGeometry() {
   return geo;
 }
 
+/** Roof number decal: bold white digit with a dark outline. */
+function numberTexture(num) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, 128, 128);
+  g.font = '900 92px Inter, system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.lineJoin = 'round';
+  g.lineWidth = 12;
+  g.strokeStyle = 'rgba(10, 12, 16, 0.85)';
+  g.strokeText(num, 64, 70);
+  g.fillStyle = '#f4f7fa';
+  g.fillText(num, 64, 70);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 function buildSteeringWheel() {
   const mount = new THREE.Group();
   mount.name = 'steeringWheel';
@@ -201,7 +221,7 @@ function buildSteeringWheel() {
   return { mount, wheel };
 }
 
-function buildWheel(cfg, simple = false) {
+function buildWheel(cfg, simple = false, discMat = null) {
   const R = cfg.wheel.radius;
   const W = cfg.wheel.width;
 
@@ -232,9 +252,18 @@ function buildWheel(cfg, simple = false) {
   face.castShadow = true;
   spin.add(face);
 
+  // brake disc (always present: it glows orange when the car brakes, which
+  // reads well even on the simplified AI cars). One material per car so the
+  // glow can be driven from a single emissiveIntensity write.
+  if (discMat) {
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.62, R * 0.62, 0.03, 20), discMat);
+    disc.rotation.z = Math.PI / 2;
+    disc.position.x = W * 0.16;
+    spin.add(disc);
+  }
+
   // AI cars only need the silhouette and the rim at racing distance; the
-  // spokes, disc and caliper are ten extra draw calls per car for pixels
-  // nobody can resolve.
+  // spokes and caliper are extra draw calls for pixels nobody can resolve.
   if (simple) return { steer, spin };
 
   const hubMat = mat(0x2a2e33, { roughness: 0.5, metalness: 0.7 });
@@ -251,15 +280,6 @@ function buildWheel(cfg, simple = false) {
     pivot.add(spoke);
     spin.add(pivot);
   }
-
-  // brake disc + caliper so rotation reads clearly
-  const disc = new THREE.Mesh(
-    new THREE.CylinderGeometry(R * 0.62, R * 0.62, 0.03, 20),
-    mat(0x4a4f55, { roughness: 0.45, metalness: 0.85 }),
-  );
-  disc.rotation.z = Math.PI / 2;
-  disc.position.x = W * 0.16;
-  spin.add(disc);
 
   const caliper = new THREE.Mesh(
     new THREE.BoxGeometry(0.07, R * 0.42, R * 0.26),
@@ -347,11 +367,41 @@ export function createCarMesh(cfg = CAR) {
     body.add(box(0.19, 0.1, 0.11, paint, s * 0.97, 1.01, 0.62));
   }
 
+  // front wing: main plane plus endplates, poking out ahead of the splitter
+  body.add(box(1.7, 0.05, 0.5, carbon, 0, 0.13, 2.32));
+  for (const s of [-1, 1]) {
+    body.add(box(0.05, 0.12, 0.34, carbon, s * 0.85, 0.18, 2.32));
+  }
+
   // rear wing
   body.add(box(1.66, 0.06, 0.4, carbon, 0, 1.12, -2.08));
   for (const s of [-1, 1]) {
     body.add(box(0.056, 0.28, 0.18, carbon, s * 0.66, 0.97, -2.07));
     body.add(box(0.034, 0.16, 0.4, paintDark, s * 0.84, 1.12, -2.08));
+  }
+
+  // livery accents: the player's car gets a white centre stripe so it reads
+  // as "your car" from the chase and TV cameras
+  if (cfg.stripe) {
+    const white = mat(0xf2f5f8, { roughness: 0.4, metalness: 0.3 });
+    body.add(box(0.3, 0.012, 1.18, white, 0, 1.281, -0.355)); // roof
+    body.add(box(0.5, 0.052, 0.2, white, 0, 0.157, 2.28));    // splitter centre
+  }
+
+  // roof number (all cars: 1 = player, 2..11 = the AI field)
+  if (cfg.number) {
+    const num = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.42, 0.42),
+      new THREE.MeshBasicMaterial({
+        map: numberTexture(cfg.number),
+        transparent: true,
+        depthWrite: false,
+      }),
+    );
+    num.rotation.x = -Math.PI / 2;
+    num.position.set(0, 0.8575, -0.355);
+    num.renderOrder = 2;
+    body.add(num);
   }
 
   // lights
@@ -386,9 +436,16 @@ export function createCarMesh(cfg = CAR) {
   }
 
   // ---------------------------------------------------------------- wheels
+  const discMat = new THREE.MeshStandardMaterial({
+    color: 0x4a4f55,
+    roughness: 0.45,
+    metalness: 0.85,
+    emissive: new THREE.Color(0xff4a1a),
+    emissiveIntensity: 0.1,
+  });
   const wheelMeshes = [];
   for (let i = 0; i < 4; i++) {
-    const w = buildWheel(cfg, simple);
+    const w = buildWheel(cfg, simple, discMat);
     root.add(w.steer);
     wheelMeshes.push(w);
   }
@@ -441,6 +498,7 @@ export function createCarMesh(cfg = CAR) {
       // very subtle brake-light glow
       const braking = car.telemetry.brake > 0.05 || car.telemetry.handbrake;
       tailMat.emissiveIntensity = braking ? 4.5 : 1.6;
+      discMat.emissiveIntensity = braking ? 1.5 : 0.1;
     },
 
     setVisible(v) {

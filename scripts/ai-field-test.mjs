@@ -9,6 +9,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import { Vehicle } from '../src/vehicle/vehicle.js';
 import { AIDriver } from '../src/ai/aiDriver.js';
+import { buildTrackCurve } from '../src/trackLayout.js';
 
 await RAPIER.init();
 const DT = 1 / 120;
@@ -21,13 +22,8 @@ world.createCollider(
   RAPIER.ColliderDesc.cuboid(2500, 0.5, 2500).setTranslation(0, -0.5, 0).setFriction(0.9),
 );
 
-const pts = [];
-for (let i = 0; i < 18; i++) {
-  const a = (i / 18) * Math.PI * 2;
-  const r = 158 + 46 * Math.sin(3 * a + 0.4) + 20 * Math.sin(5 * a + 1.1);
-  pts.push(new THREE.Vector3(Math.cos(a) * r * 1.28, 0, Math.sin(a) * r * 0.82));
-}
-const curve = new THREE.CatmullRomCurve3(pts, true, 'catmullrom', 0.5);
+// the game's actual circuit (src/trackLayout.js), not a test oval
+const curve = buildTrackCurve();
 const length = curve.getLength();
 const start = curve.getPointAt(0);
 const startTangent = curve.getTangentAt(0);
@@ -37,7 +33,7 @@ const track = { curve, length, start, startQuat, startTangent };
 
 const ROW_GAP = 12;
 const COL = 3;
-const PACE = [1.005, 1.02, 0.985, 1.03, 0.995, 1.015, 0.98, 1.025, 1.0, 1.01];
+const PACE = [1.002, 1.004, 0.998, 1.005, 1.001, 1.003, 0.997, 1.004, 1.0, 1.002];
 const LINE = [0.96, 1.0, 0.92, 0.99, 0.94, 0.97, 0.9, 0.98, 0.95, 0.93];
 const BIAS = [0.2, -0.25, -0.4, 0.4, 0.0, -0.1, 0.35, -0.35, 0.1, -0.2];
 

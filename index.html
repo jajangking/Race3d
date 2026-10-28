@@ -47,12 +47,21 @@
               <span class="timing__value" id="top">—</span>
             </div>
           </div>
-          <button class="respawn respawn--top" id="respawn" type="button" title="Respawn (R)" aria-label="Respawn">↻</button>
-        </div>
+        <button class="respawn respawn--top" id="respawn" type="button" title="Respawn (R)" aria-label="Respawn">↻</button>
       </div>
+    </div>
 
-      <div class="hud__bottom">
-        <div class="speedo" id="speedo">
+    <!-- spectator camera UI (AI vs AI mode) -->
+    <div class="spectate-ui" id="spectate-ui">
+      <div class="cammode" id="cammode">TV CAM</div>
+      <div class="spectate-ui__btns">
+        <button class="sbtn" id="btn-cam" type="button" title="Cycle camera (C)">CAM</button>
+        <button class="sbtn" id="btn-car" type="button" title="Cycle focus car (X)">CAR</button>
+      </div>
+    </div>
+
+    <div class="hud__bottom">
+      <div class="speedo" id="speedo">
           <div class="speedo__main">
             <div class="speedo__value" id="speed">0</div>
             <div class="speedo__unit">km/h</div>
@@ -60,6 +69,14 @@
           <div class="speedo__meta"><span id="rpm">950</span> RPM</div>
           <div class="speedo__gear" id="gear">1</div>
         </div>
+      </div>
+
+      <!-- spectator leaderboard (AI vs AI mode) -->
+      <div class="standings" id="standings" hidden>
+        <div class="standings__head">
+          <span>POS</span><span></span><span>CAR</span><span>LAP</span>
+        </div>
+        <div class="standings__body" id="standings-body"></div>
       </div>
     </div>
 
@@ -103,14 +120,20 @@
         <p class="intro__sub">
           A car built from springs, dampers, a Pacejka-style tyre model and a torque curve on top of
           a Rapier rigid body. Nothing about the handling is scripted.
+          <b>Drive it yourself</b> — or sit in the pit wall and watch the field race
+          <b>AI vs AI</b> from the broadcast cameras.
         </p>
         <dl class="specs">
           <div><dt>ENGINE</dt><dd>3.0 inline-6 · 378 Nm</dd></div>
           <div><dt>DRIVE</dt><dd>Rear-wheel · 6-speed</dd></div>
           <div><dt>MASS</dt><dd>1280 kg</dd></div>
           <div><dt>TYRES</dt><dd>Semi-slick · µ 1.45</dd></div>
+          <div><dt>CIRCUIT</dt><dd>1.7 km · 10 corners · pit lane</dd></div>
         </dl>
-        <button class="intro__go" id="start" type="button">START ENGINE</button>
+        <div class="intro__modes">
+          <button class="intro__go" id="start" type="button">DRIVE</button>
+          <button class="intro__go intro__go--watch" id="start-watch" type="button">AI RACE · SPECTATE</button>
+        </div>
         <div class="intro__keys">
           <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> drive</span>
           <span><kbd>SPACE</kbd> handbrake</span>
@@ -118,6 +141,7 @@
           <span><kbd>Y</kbd> stability</span>
           <span><kbd>R</kbd> respawn</span>
           <span><kbd>C</kbd> camera</span>
+          <span><kbd>X</kbd> focus car (spectate)</span>
         </div>
       </div>
     </div>

@@ -45,6 +45,17 @@ export function createTireSmoke(scene) {
   let head = 0;
   const v = new THREE.Vector3();
 
+  // PointsMaterial has no per-point alpha, so every point in the buffer is
+  // drawn every frame. A dead particle must be parked far below the world
+  // (y = -9999) instead of being left at its last position - otherwise it
+  // lingers as a faint grey dot on the road until the ring wraps around,
+  // and reset() used to collapse all 700 of them to the world origin.
+  const HIDDEN_Y = -9999;
+  const hideAll = () => {
+    for (let i = 0; i < MAX; i++) position[i * 3 + 1] = HIDDEN_Y;
+  };
+  hideAll();
+
   function emit(x, y, z, vx, vz, power) {
     const i = head;
     head = (head + 1) % MAX;
@@ -66,9 +77,9 @@ export function createTireSmoke(scene) {
   function reset() {
     life.fill(0);
     maxLife.fill(0);
-    position.fill(0);
     velocity.fill(0);
     size.fill(0);
+    hideAll();
     head = 0;
     geometry.attributes.position.needsUpdate = true;
   }
@@ -116,6 +127,10 @@ export function createTireSmoke(scene) {
     for (let i = 0; i < MAX; i++) {
       if (life[i] >= maxLife[i]) continue;
       life[i] += dt;
+      if (life[i] >= maxLife[i]) {
+        position[i * 3 + 1] = HIDDEN_Y;
+        continue;
+      }
       const base = i * 3;
       position[base + 0] += velocity[base + 0] * dt;
       position[base + 1] += velocity[base + 1] * dt;
