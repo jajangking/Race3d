@@ -83,37 +83,55 @@ function noiseTexture(size, base, spread, dots = 9000) {
   return tex;
 }
 
-/** Asphalt: two noise octaves plus faint longitudinal wear streaks. */
+/** Asphalt: dark, low-contrast macadam with longitudinal tyre-wear bands.
+ *  The old bright, heavily-speckled read like gravel/dirt, so the base is
+ *  much darker, the speckle is sparse and dark-biased, and a few wide dark
+ *  rubber bands sell the "used tarmac" look. */
 function asphaltTexture() {
   const c = document.createElement('canvas');
   c.width = c.height = 512;
   const g = c.getContext('2d');
-  g.fillStyle = '#2f3136';
+  g.fillStyle = '#232529';
   g.fillRect(0, 0, 512, 512);
-  // fine speckle
-  for (let i = 0; i < 14000; i++) {
-    const a = Math.random() * 0.1;
-    const r = Math.random();
-    g.fillStyle = `rgba(${r > 0.5 ? 255 : 0}, ${r > 0.5 ? 255 : 0}, ${r > 0.5 ? 255 : 0}, ${a})`;
-    const s = 1 + Math.random() * 1.6;
+  // sparse, dark-biased aggregate speckle (little highlight = no gravel look)
+  for (let i = 0; i < 7000; i++) {
+    const light = Math.random() > 0.72;
+    const a = light ? Math.random() * 0.05 : Math.random() * 0.16;
+    g.fillStyle = light
+      ? `rgba(160, 165, 175, ${a})`
+      : `rgba(0, 0, 0, ${a})`;
+    const s = 1 + Math.random() * 1.4;
     g.fillRect(Math.random() * 512, Math.random() * 512, s, s);
   }
-  // coarser patches
-  for (let i = 0; i < 500; i++) {
-    const a = Math.random() * 0.06;
-    const light = Math.random() > 0.5;
-    g.fillStyle = light ? `rgba(210, 214, 220, ${a})` : `rgba(0, 0, 0, ${a})`;
-    const s = 4 + Math.random() * 18;
+  // soft coarse patches, mostly darkening
+  for (let i = 0; i < 380; i++) {
+    const light = Math.random() > 0.7;
+    const a = Math.random() * (light ? 0.035 : 0.09);
+    g.fillStyle = light ? `rgba(150, 155, 165, ${a})` : `rgba(0, 0, 0, ${a})`;
+    const s = 6 + Math.random() * 26;
     g.fillRect(Math.random() * 512, Math.random() * 512, s, s * (0.4 + Math.random()));
   }
-  // longitudinal wear streaks (canvas Y = V = along the road)
-  for (let i = 0; i < 160; i++) {
+  // wide dark rubber bands (where the field runs), canvas Y = along the road
+  for (let i = 0; i < 5; i++) {
+    const x = 40 + Math.random() * 432;
+    const w = 18 + Math.random() * 40;
+    const a = 0.10 + Math.random() * 0.12;
+    const grad = g.createLinearGradient(x, 0, x + w, 0);
+    grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    grad.addColorStop(0.35, `rgba(0, 0, 0, ${a})`);
+    grad.addColorStop(0.65, `rgba(0, 0, 0, ${a})`);
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    g.fillStyle = grad;
+    g.fillRect(x, 0, w, 512);
+  }
+  // thin longitudinal wear streaks
+  for (let i = 0; i < 90; i++) {
     const x = Math.random() * 512;
-    const w = 1 + Math.random() * 3;
-    const dark = Math.random() > 0.35;
+    const w = 1 + Math.random() * 2.5;
+    const dark = Math.random() > 0.3;
     g.fillStyle = dark
-      ? `rgba(0, 0, 0, ${0.03 + Math.random() * 0.06})`
-      : `rgba(200, 205, 212, ${0.02 + Math.random() * 0.03})`;
+      ? `rgba(0, 0, 0, ${0.04 + Math.random() * 0.07})`
+      : `rgba(140, 145, 152, ${0.02 + Math.random() * 0.03})`;
     g.fillRect(x, 0, w, 512);
   }
   const tex = new THREE.CanvasTexture(c);
@@ -260,7 +278,7 @@ export function createTrack(scene) {
   scene.add(group);
 
   // ---------------------------------------------------------------- ground
-  const groundTex = noiseTexture(512, '#46523a', 0.16, 12000);
+  const groundTex = noiseTexture(512, '#414d36', 0.16, 12000);
   groundTex.repeat.set(160, 160);
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(8000, 8000),
@@ -348,8 +366,11 @@ export function createTrack(scene) {
     group.add(dash);
   }
 
-  // kerbs: full-width red/white at every corner (both road edges where the
-  // radius drops below ~45 m)
+  // kerbs: full-width red/white at every corner (both road edges). The mask
+  // uses hysteresis - kerbs start when the radius drops below ~55 m and only
+  // end once it has stayed above ~70 m for a short stretch - so each corner
+  // gets one continuous band per side instead of fragmented specks toggling
+  // on/off as the radius wobbles around a threshold.
   {
     const kerbTex = kerbTexture();
     const kerbMat = new THREE.MeshStandardMaterial({ map: kerbTex, roughness: 0.75 });
@@ -364,8 +385,31 @@ export function createTrack(scene) {
     const side = new THREE.Vector3();
     let dist = 0;
     let prev = null;
-    const K = ROAD_HALF_WIDTH + 0.72;
-    const KERB_K = 1 / 45; // kerb when radius < 45 m
+    const K = ROAD_HALF_WIDTH + 0.5; // inner edge just inside the white line
+    const KERB_IN_K = 1 / 55; // enter a kerb zone when radius < 55 m
+    const KERB_OUT_K = 1 / 70; // leave only once radius > 70 m...
+    const KERB_HOLD = 5; // ...for this many samples (~15 m)
+    const kerbMask = new Array(N).fill(false);
+    {
+      let inKerb = false;
+      let exitStreak = 0;
+      // Two revolutions so the state wraps consistently across u = 0.
+      for (let pass = 0; pass < 2; pass++) {
+        for (let i = 0; i < N; i++) {
+          const k = line.curvature[i];
+          if (k > KERB_IN_K) {
+            inKerb = true;
+            exitStreak = 0;
+          } else if (k < KERB_OUT_K) {
+            exitStreak++;
+            if (exitStreak > KERB_HOLD) inKerb = false;
+          } else {
+            exitStreak = 0;
+          }
+          if (pass === 1) kerbMask[i] = inKerb;
+        }
+      }
+    }
     for (let i = 0; i <= N; i++) {
       const u = i / N;
       curve.getPointAt(u, p);
@@ -373,15 +417,14 @@ export function createTrack(scene) {
       side.set(t.z, 0, -t.x).normalize();
       if (prev) dist += p.distanceTo(prev);
       prev = prev ? prev.copy(p) : p.clone();
-      const k = line.curvature[i % N];
-      const sides = k > KERB_K ? [1, -1] : [];
+      const sides = kerbMask[i % N] ? [1, -1] : [];
       if (sides.length === 0) continue;
       const v = dist / 2.4;
       for (const sgn of sides) {
         const cx = p.x + side.x * sgn * K;
         const cz = p.z + side.z * sgn * K;
-        const halfX = side.x * 0.65;
-        const halfZ = side.z * 0.65;
+        const halfX = side.x * 0.75;
+        const halfZ = side.z * 0.75;
         const a = pos.length / 3;
         pos.push(cx - halfX, 0.028, cz - halfZ, cx + halfX, 0.028, cz + halfZ);
         nor.push(0, 1, 0, 0, 1, 0);

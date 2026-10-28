@@ -75,6 +75,8 @@ export class AIDriver {
     this.mode = 'race'; // race | reverse | recover | avoid
     this.reverseDir = 1;
     this.recoverPhase = 'reverse';
+    this.recoverDetourSide = 0;
+    this.recoverDetourTime = 0;
     this.flippedTime = 0;
     this._lastGear = 1;
     this.lastPos = null;
@@ -87,6 +89,10 @@ export class AIDriver {
     this.startMergeDone = false;
     this._lastBlocking = this.sensors.maxDist;
     this._closing = 0;
+    this._following = false; // follow governor engaged (hysteresis state)
+    this._otSide = 0; // committed braking-zone overtake side (+1 / -1)
+    this._otReleaseU = 0; // corner apex u; the move ends 30 m past it
+    this._otCooldown = 0; // seconds before another pass may be committed
 
     // lightweight behaviour stats (read by the sim test scripts)
     this.stats = { recover: 0, right: 0, offTime: 0 };
@@ -294,15 +300,19 @@ export class AIDriver {
     // blocked detection: the car is asking for throttle but the body speed
     // stays near zero. Using per-frame displacement here was wrong, because
     // a normal launch moves only a few millimetres per 1/120 s step.
+    // A car nose-to-tail with a stopped car creeps at ~0-1.5 m/s against
+    // its collider; that jitter used to reset these timers forever, so the
+    // jammed state (and its detour) never triggered.
+    const wedged = speed < 1.5 && sense.frontCenter < 3.0;
     if (speed < 0.4 && Math.abs(this.car.telemetry?.throttle || 0) > 0.4) {
       this.blockedTime += dt;
-    } else {
+    } else if (!wedged) {
       this.blockedTime = Math.max(0, this.blockedTime - dt * 2);
     }
     // a racing AI should never sit still for seconds; this catches a car
     // wedged somewhere with too little throttle for the detector above
     if (speed < 0.5) this.idleTime += dt;
-    else this.idleTime = 0;
+    else if (!wedged) this.idleTime = 0;
 
     // Estimate how fast we are closing on whatever is directly ahead. The
     // sensor refreshes every few steps, so the difference between two
@@ -474,6 +484,36 @@ export class AIDriver {
         return { throttle: 0.75, brake: 0, steer, handbrake: false };
       }
 
+      // Phase 1b: the road itself is blocked by a car. "Aim at the nearest
+      // point of road" deadlocks nose-to-tail (the done condition needs
+      // speed, which a car behind a stopped one can never get). Detour:
+      // creep sideways around the obstacle on the clear side at low speed.
+      if (this.recoverPhase === 'detour') {
+        this.recoverDetourTime += dt;
+        const s = this.sensors.lastReading;
+        const clear = this.recoverDetourSide === -1 ? s.left : s.right;
+        const passed = s.frontCenter > 9;
+        if (passed || this.recoverDetourTime > 6 || clear < 2.0) {
+          // Around it (or the attempt failed): re-aim at the road.
+          this.recoverPhase = 'turn';
+          this.recoverTime = 0;
+          this.recoverDetourTime = 0;
+          this.recoverDetourSide = 0;
+          return { throttle: 0.5, brake: 0, steer: this.recoverDetourSide * 0.3, handbrake: false };
+        }
+        if (speed < 0.8 && this.recoverDetourTime > 4) {
+          // Wedged mid-detour: back up to break the contact, then the turn
+          // phase re-aims (and re-triggers the detour on the other side if
+          // the road is still blocked).
+          this.recoverPhase = 'reverse';
+          this.recoverTime = 0;
+          this.recoverDetourSide = -this.recoverDetourSide;
+          this.reverseDir = this.recoverDetourSide;
+          return { throttle: 0, brake: 0, steer: 0, handbrake: false };
+        }
+        return { throttle: 0.5, brake: 0, steer: this.recoverDetourSide * 0.85, handbrake: false };
+      }
+
       // Phase 2: drive back to the road on its own.
       //
       // First problem: a car facing the wrong way. "Aim at the closest
@@ -507,6 +547,39 @@ export class AIDriver {
         this.car.drivetrain.gear = 1;
         this.car.drivetrain.shiftTimer = 0;
         this.car.drivetrain.shiftCooldown = 0;
+      }
+
+      // Nose-to-tail with a stopped car: aiming at the nearest road point
+      // deadlocks (the done condition needs speed, which is impossible with
+      // a car parked 2 m ahead). Detour around the clear side; if boxed in
+      // on both sides, back up first to break the contact.
+      {
+        const s = this.sensors.lastReading;
+        if (speed < 2.5 && s.frontCenter < 3.5 && this.recoverTime > 1.5) {
+          const side = s.left > 4.5 ? -1 : s.right > 4.5 ? 1 : 0;
+          if (side !== 0) {
+            this.recoverPhase = 'detour';
+            this.recoverDetourSide = side;
+            this.recoverDetourTime = 0;
+            if (this.car.drivetrain) {
+              this.car.drivetrain.gear = 1;
+              this.car.drivetrain.shiftTimer = 0;
+              this.car.drivetrain.shiftCooldown = 0;
+            }
+            return { throttle: 0.4, brake: 0, steer: side * 0.6, handbrake: false };
+          }
+          if (this.recoverTime > 4.0) {
+            this.recoverPhase = 'reverse';
+            this.recoverTime = 0;
+            this.reverseDir = Math.sign(lat2) >= 0 ? 1 : -1;
+            if (this.car.drivetrain) {
+              this.car.drivetrain.gear = -1;
+              this.car.drivetrain.shiftTimer = 0;
+              this.car.drivetrain.shiftCooldown = 0;
+            }
+            return { throttle: 0, brake: 0, steer: 0, handbrake: false };
+          }
+        }
       }
 
       // Otherwise pick the most reachable point of road near the car
@@ -578,8 +651,101 @@ export class AIDriver {
       merge = clamp((this.u - 0.075) / 0.055, 0, 1);
       if (merge >= 1) this.startMergeDone = true;
     }
-    const plannedOff = sampleLine(this.line.offsets, this.u) * this.lineScale + this.laneBias;
-    const lineOffNow = plannedOff * merge + this.laneOffset * (1 - merge);
+    let plannedOff = sampleLine(this.line.offsets, this.u) * this.lineScale + this.laneBias;
+    let lineOffNow = plannedOff * merge + this.laneOffset * (1 - merge);
+
+    // ----- braking-zone overtake ------------------------------------------
+    // A car ahead into a corner is a passing opportunity, not a wall to
+    // brake for. The move: commit to the OUTSIDE line before the braking
+    // point (a wide car can brake later than the car on the inside line),
+    // hold that wide line through the corner, and only merge back past the
+    // apex. The old behaviour - governor target + hard brake - is exactly
+    // what read as "dumb" when the pack stacked into the last corner.
+    {
+      this._otCooldown = Math.max(0, this._otCooldown - dt);
+      if (this._otSide === 0) {
+        // Two windows: the strongest corner up to 60 m AHEAD (classic
+        // brake-later pass), and the strongest corner up to 35 m BEHIND
+        // (the corner exit, where the leader sits on the apex line and the
+        // outside is still open - the dive-down-the-exit pass).
+        let peakK = 0;
+        let peakU = this.u;
+        for (let d = 12; d <= 60; d += 2) {
+          const uu = (this.u + d / this.length) % 1;
+          const kk = sampleLine(this.line.curvature, uu);
+          if (kk > peakK) {
+            peakK = kk;
+            peakU = uu;
+          }
+        }
+        let backK = 0;
+        let backU = this.u;
+        for (let d = 35; d >= 6; d -= 2) {
+          const uu = (((this.u - d / this.length) % 1) + 1) % 1;
+          const kk = sampleLine(this.line.curvature, uu);
+          if (kk > backK) {
+            backK = kk;
+            backU = uu;
+          }
+        }
+        const brakingCorner = peakK > 1 / 48; // radius < 48 m - a real braking zone
+        const exitCorner = peakK <= 1 / 48 && backK > 1 / 48;
+        const anchorU = brakingCorner ? peakU : backU;
+        // frontCenter reads exactly maxDist when there is no car in the fan -
+        // only a real detection can trigger the move, or a lone car would
+        // "overtake" a phantom on every corner.
+        if (
+          this._otCooldown <= 0 &&
+          (brakingCorner || exitCorner) &&
+          blocking < this.sensors.maxDist - 0.01 &&
+          speedKmh > 45
+        ) {
+          // curvatureSigned > 0 is a left bend -> inside is left, outside is
+          // right, so the outside lane is simply the sign of the bend.
+          const outSide = Math.sign(sampleLine(this.line.curvatureSigned, anchorU)) || 1;
+          const clearOut = (outSide === -1 ? sense.left : sense.right) > 3.4;
+          // The diagonal sensor on the outside lane sees a car that is
+          // already committed to that line - in a pack only the first car
+          // behind the leader passes; the rest hold a (now gentle) follow
+          // gap instead of stacking three wide into the same lane.
+          const laneFree = (outSide === -1 ? sense.frontLeft : sense.frontRight) >
+            this.sensors.maxDist - 2;
+          const fitsOut = Math.abs(lineOffNow + outSide * 2.2) < 5.4;
+          if (clearOut && fitsOut) {
+            this._otSide = outSide;
+            // An exit commit can already be 30 m past the apex - then the
+            // release point is 30 m from here, not from the apex.
+            let du0 = this.u - anchorU;
+            if (du0 > 0.5) du0 -= 1;
+            else if (du0 < -0.5) du0 += 1;
+            this._otReleaseU = du0 * this.length > 30 ? this.u : anchorU;
+            this.avoidSide = outSide; // avoidance follows the committed line
+          }
+        }
+      } else {
+        // Hold the wide line until 30 m past the apex; bail if the attempt
+        // fell apart (too slow to carry the line). Signed wrap: before the
+        // apex this is negative, so a modulo wrap (which would read ~one
+        // full lap) must not be used here.
+        let du = this.u - this._otReleaseU;
+        if (du > 0.5) du -= 1;
+        else if (du < -0.5) du += 1;
+        const past = du * this.length;
+        if (past > 30 || speedKmh < 28) {
+          this._otSide = 0;
+          this.avoidSide = 0;
+          // A low-speed bail happened because the attempt failed (car ahead
+          // still blocking) - do not re-commit every frame at 20 km/h.
+          this._otCooldown = speedKmh < 28 ? 2.0 : 1.0;
+        }
+      }
+    }
+    // Ramp the wide line in over the approach so the move is a smooth
+    // commitment, not a sudden swerve at speed.
+    if (this._otSide !== 0) {
+      const ramp = clamp((45 - blocking) / 25, 0.25, 1);
+      lineOffNow += this._otSide * 2.2 * ramp;
+    }
     const crossTrack = lateral - lineOffNow;
     const previewU = (this.u + clamp(this.previewBase + speed * this.previewSpeed, 6, 16) / this.length) % 1;
     const kAhead = sampleLine(this.line.curvatureSigned, previewU);
@@ -617,15 +783,26 @@ export class AIDriver {
 
     // Follow governor: when a car is ahead, match its pace so the gap is
     // held with speed instead of last-moment braking or a rear-end. Closing
-    // at c m/s means "the car ahead runs at v - c", so aiming for v - c - 4
-    // bleeds off the closing speed and settles into a stable following gap.
-    // Skipped while actively passing with a clear lane - that is the moment
-    // to keep the pace instead of matching the car being overtaken.
+    // at c m/s means "the car ahead runs at v - c". The bleed scales with
+    // the closing speed: normal following (1-4 m/s) gets a gentle
+    // correction (the old flat v - c*3.6 - 4 plus /10 ramp read as constant
+    // hard brakes in a pack), while a big closing (a faster car stacking
+    // onto the pack, or a stopped car) brakes hard and early - that
+    // compression is what kept the field orderly. Engage with hysteresis so
+    // gap breathing does not flap the target. Skipped while committing to a
+    // pass - that is the moment to keep the pace instead of matching.
     const sideClear = this.avoidSide !== 0 &&
       ((this.avoidSide === -1 ? sense.left : sense.right) > 5);
-    if (blocking < 40 && this._closing > 0.5 && !sideClear) {
-      const followKmh = speedKmh - this._closing * 3.6 - 4;
-      targetKmh = Math.min(targetKmh, Math.max(25, followKmh));
+    if (this._otSide === 0 && blocking < 40 && !sideClear) {
+      if (this._closing > 0.8) this._following = true;
+      else if (this._closing < 0.3) this._following = false;
+      if (this._following) {
+        const f = clamp((this._closing - 4) / 6, 0, 1);
+        const bleed = this._closing * 3.6 * (0.45 + 0.55 * f) - 2;
+        targetKmh = Math.min(targetKmh, Math.max(25, speedKmh - bleed));
+      }
+    } else {
+      this._following = false;
     }
 
     let throttle = 0;
@@ -634,7 +811,7 @@ export class AIDriver {
     if (speedErr > 2) {
       throttle = clamp(speedErr / 15, 0.45, 1);
     } else if (speedErr < -2) {
-      brake = clamp(-speedErr / 10, 0.2, 1);
+      brake = clamp(-speedErr / 16, 0.15, 1);
     } else {
       throttle = clamp(0.4 + speedErr / 20, 0.25, 0.65);
     }
