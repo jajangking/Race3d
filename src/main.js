@@ -206,7 +206,7 @@ chase.snap(car);
 
 // Spectator (AI vs AI) mode: the player's car joins the field as the 11th AI
 // car and the player watches with TV / orbit / cinematic / drone cameras.
-const spectator = new SpectatorCamera(camera, canvas);
+const spectator = new SpectatorCamera(camera, canvas, track);
 let spectate = false;
 let focusIdx = 0;
 let lastLeaderIdx = 0;
@@ -487,6 +487,7 @@ function frame(now) {
 
   let state = idle;
   let focusCar = car;
+  let focusDriver = null;
   if (started) {
     if (!spectate) {
       state = input.update(dt);
@@ -524,10 +525,13 @@ function frame(now) {
       refreshRace();
       const fi = spectator.mode === 'tv' ? lastLeaderIdx : focusIdx;
       focusCar = opponents[fi].car;
+      focusDriver = opponents[fi].driver;
       hud.update(focusCar, sessionTime);
       if (performance.now() - lastStandingsAt > 250) {
         lastStandingsAt = performance.now();
         hud.updateStandings(buildStandingsRows(fi));
+        // the TV/cinematic labels change shot-to-shot, not just on C
+        hud.setCamMode(spectator.label);
       }
     } else {
       hud.update(car, sessionTime);
@@ -551,7 +555,7 @@ function frame(now) {
   carMesh.update(car);
   skidMarks.update(car);
   tireSmoke.update(dt, car);
-  if (started && spectate) spectator.update(dt, focusCar);
+  if (started && spectate) spectator.update(dt, focusCar, focusDriver);
   else if (!spectate) chase.update(dt, car);
 
   // shadow frustum follows the car
