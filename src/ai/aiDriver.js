@@ -87,6 +87,9 @@ export class AIDriver {
     this.startMergeDone = false;
     this._lastBlocking = this.sensors.maxDist;
     this._closing = 0;
+
+    // lightweight behaviour stats (read by the sim test scripts)
+    this.stats = { recover: 0, right: 0, offTime: 0 };
   }
 
   _getNearestU(pos) {
@@ -108,11 +111,11 @@ export class AIDriver {
       }
     }
     // The local window only spans ~+/-90 m. If nothing that close was found,
-    // the car is far off the track (long slide, infield crossover, teleport)
-    // and the window would return the nearest sample *somewhere else on the
-    // circuit* - often the opposite side of it. _snapToTrack() would then
-    // launch the car to a wrong location. Fall back to a global search,
-    // which is ~400 distance checks and only happens in that rare case.
+    // the car is far off the track (long slide, infield crossover) and the
+    // window would return the nearest sample *somewhere else on the circuit*
+    // - often the opposite side of it, which would steer the car the wrong
+    // way home. Fall back to a global search, which is ~400 distance checks
+    // and only happens in that rare case.
     if (bestD > 60 * 60) {
       bestD = Infinity;
       for (let idx = 0; idx < n; idx++) {
@@ -187,6 +190,7 @@ export class AIDriver {
     this.recoverPhase = reverse ? 'reverse' : 'turn';
     this.flippedTime = 0;
     this.reverseDir = lateral >= 0 ? 1 : -1;
+    this.stats.recover++;
     if (this.car.drivetrain) {
       this.car.drivetrain.gear = reverse ? -1 : 1;
       this.car.drivetrain.shiftTimer = 0;
@@ -194,26 +198,34 @@ export class AIDriver {
     }
   }
 
-  /** Put the car upright on the nearest point of the centreline. */
-  _snapToTrack() {
+  /**
+   * Right a flipped car IN PLACE: it keeps its position (no teleport to the
+   * line, no reset of progress) and then drives itself back the way any car
+   * does. A car on its roof genuinely cannot right itself with steering, so
+   * this is the minimum physical intervention - the car then survives the
+   * rest of the way on its own.
+   */
+  _rightInPlace() {
     const t = this.car.body.translation();
-    const u = this._getNearestU(new THREE.Vector3(t.x, t.y, t.z));
-    this.curve.getPointAt(u, _pos);
+    const u = this._getNearestU(new THREE.Vector3(t.x, 0, t.z));
     this.curve.getTangentAt(u, _tan);
     _tan.y = 0;
     _tan.normalize();
     const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), _tan);
-    this.car.reset(new THREE.Vector3(_pos.x, 0.48, _pos.z), q);
-    this.mode = 'race';
+    this.car.reset(new THREE.Vector3(t.x, Math.max(t.y, 0.48), t.z), q);
+    this.stats.right++;
+    this.mode = 'recover';
+    this.recoverTime = 0;
+    this.recoverPhase = 'turn';
+    this.flippedTime = 0;
     this.stuckTime = 0;
     this.blockedTime = 0;
     this.idleTime = 0;
-    this.recoverTime = 0;
-    this.flippedTime = 0;
-    this._lastBlocking = this.sensors.maxDist;
-    this._closing = 0;
-    this.sensors._cooldown = 0;
-    this.sensors._empty();
+    if (this.car.drivetrain) {
+      this.car.drivetrain.gear = 1;
+      this.car.drivetrain.shiftTimer = 0;
+      this.car.drivetrain.shiftCooldown = 0;
+    }
   }
 
   _shiftGears(speed) {
@@ -316,12 +328,18 @@ export class AIDriver {
     let avoidSteer = 0;
     let avoidBrake = 0;
     const avoidRange = 26.0;
+    // A steering nudge at 115 km/h throws the car much further than at 40.
+    // Scale the avoidance authority down with speed; at pace, the smart
+    // move is to brake and hold the line, not to swerve.
+    const speedDamp = clamp(75 / Math.max(speedKmh, 10), 0.35, 1);
+    // how much side clearance counts as "room to pass" at this speed
+    const noRoom = speedKmh > 80 ? 3.4 : 2.0;
     // Only treat a car as an obstacle when it is actually in our lane. The
     // wide front fan also sees cars in the next column, and reacting to those
     // made a 10-car pack swerve into each other for no reason.
     const blocking = sense.frontCenter;
     if (blocking < avoidRange) {
-      this.avoidHold = 0.8;
+      this.avoidHold = 1.2;
       if (this.avoidSide === 0) {
         if (sense.frontLeft > sense.frontRight + 0.8) this.avoidSide = -1;
         else if (sense.frontRight > sense.frontLeft + 0.8) this.avoidSide = 1;
@@ -332,7 +350,11 @@ export class AIDriver {
       else if (this.avoidSide === 1 && sense.right < 2.8) this.avoidSide = -1;
     } else {
       this.avoidHold = Math.max(0, this.avoidHold - dt);
-      if (this.avoidHold === 0) this.avoidSide = 0;
+      // hold a committed overtake until the car ahead is clearly behind us -
+      // dropping the side early made cars weave back onto the line and into
+      // the pack they had just dodged
+      const passing = this.avoidSide !== 0 && blocking < 34 && this._closing < 1;
+      if (this.avoidHold === 0 && !passing) this.avoidSide = 0;
     }
     // A car 12 m ahead running at the same speed is not an obstacle to
     // dodge; swerving around it at launch is what put half the field on the
@@ -343,16 +365,16 @@ export class AIDriver {
       // is genuinely close. A full-lock swerve around a car 12 m ahead at the
       // start is what caused the first-corner pile-ups.
       const ttc = this._closing > 2 ? blocking / this._closing : Infinity;
-      if (ttc < 2.2 && this._closing > 8) {
+      if (ttc < 3.0 && this._closing > 6) {
         // Only a genuinely slower/stopped car needs an early committed move.
         // In a tight pack closing speeds are small; swerving there just starts
         // a chain reaction. Waiting until 9 m is too late for a stopped car.
-        const urgency = clamp((2.2 - ttc) / 1.6, 0, 1);
-        if (sense.left < 2.0 && sense.right < 2.0) {
-          avoidBrake = Math.max(avoidBrake, 0.4);
+        const urgency = clamp((3.0 - ttc) / 2.0, 0, 1);
+        if (sense.left < noRoom && sense.right < noRoom) {
+          avoidBrake = Math.max(avoidBrake, 0.45);
         } else {
-          avoidSteer += this.avoidSide * (0.12 + 0.45 * urgency);
-          avoidBrake = Math.max(avoidBrake, clamp((2.2 - ttc) * 0.25, 0.08, 0.5));
+          avoidSteer += this.avoidSide * (0.12 + 0.5 * urgency) * speedDamp;
+          avoidBrake = Math.max(avoidBrake, clamp((3.0 - ttc) * 0.2, 0.08, 0.5));
         }
       }
       if (ttc < 1.2) {
@@ -361,13 +383,17 @@ export class AIDriver {
       if (blocking < 2.0 && speed > 12) avoidBrake = Math.max(avoidBrake, 0.5);
       if (blocking < 9.0) {
         const strength = clamp((9.0 - blocking) / 9.0, 0, 1);
-        avoidSteer += this.avoidSide * 0.45 * strength;
+        avoidSteer += this.avoidSide * 0.45 * strength * speedDamp;
       }
     }
     // side pressure: steer away from a car alongside. The old fixed 0.35
     // only started at 1.8 m, which is already touching width for two cars.
-    if (sense.tightLeft) avoidSteer += clamp((2.8 - sense.left) * 0.22 + 0.08, 0.08, 0.32);
-    if (sense.tightRight) avoidSteer -= clamp((2.8 - sense.right) * 0.22 + 0.08, 0.08, 0.32);
+    if (sense.tightLeft) avoidSteer += clamp((2.8 - sense.left) * 0.22 + 0.08, 0.08, 0.32) * (0.5 + 0.5 * speedDamp);
+    if (sense.tightRight) avoidSteer -= clamp((2.8 - sense.right) * 0.22 + 0.08, 0.08, 0.32) * (0.5 + 0.5 * speedDamp);
+    // On the launch straight the field is still merging from the grid lanes:
+    // here a car brakes and holds its lane instead of swerving. Swerving at
+    // 100+ km/h on a 14 m wide straight is what sent the old AI onto the grass.
+    if (!this.startMergeDone) avoidSteer *= 0.2;
 
     // stuck detection: only while actually asking to drive. A car sitting on
     // its own (no input) is not "stuck", and a launch from 0 is normal.
@@ -398,14 +424,17 @@ export class AIDriver {
     if (this.mode === 'recover') {
       this.recoverTime += dt;
 
-      // A car on its roof cannot right itself with throttle and steering, so
-      // after a short grace period put it back on its wheels on the road.
+      // A car on its roof cannot right itself with throttle and steering.
+      // Let it struggle for a moment (rolling in the lean direction), then
+      // right it IN PLACE: same position, no progress reset. The car then
+      // drives itself back to the road like any other - no teleport restart.
       if (upright < 0.35) {
         this.flippedTime += dt;
-        if (this.flippedTime > 0.7) {
-          this._snapToTrack();
-          return { throttle: 0.5, brake: 0, steer: 0, handbrake: false };
+        if (this.flippedTime > 2.2) {
+          this._rightInPlace();
+          this.flippedTime = 0;
         }
+        return { throttle: 0.15, brake: 0, steer: this.reverseDir * 0.5, handbrake: false };
       } else {
         this.flippedTime = 0;
       }
@@ -425,20 +454,14 @@ export class AIDriver {
       fwd2.normalize();
       const align2 = fwd2.dot(_tan);
 
-      // Too far off to be fun watching: a car 25+ m into the grass would
-      // spend several seconds arcing back on its own. Put it back on the
-      // line immediately instead (cheap teleport, reads as "rejoining").
-      if (Math.abs(lat2) > 25) {
-        this._snapToTrack();
-        return { throttle: 0.5, brake: 0, steer: 0, handbrake: false };
-      }
-
-      // Phase 1: back up briefly with a constant steering direction so the
-      // nose swings towards the road. Alternating the sign every frame (as
-      // the old code did when cross ~ 0) cancels the turn out entirely.
+      // Phase 1 (only when the car entered jammed or facing the wrong way):
+      // back up with a constant steering direction until the nose has
+      // actually swung most of the way around. A fixed 1 s was not enough
+      // for a 180 deg car: it shifted to drive still facing backwards and
+      // powered down the track the wrong way.
       if (this.recoverPhase === 'reverse') {
         const steer = clamp(this.reverseDir * 0.9, -this.maxSteer, this.maxSteer);
-        const turnedEnough = this.recoverTime > 1.1 || (align2 > 0.6 && speed > 2);
+        const turnedEnough = this.recoverTime > 2.5 || (align2 > 0.3 && speed < 8);
         if (turnedEnough) {
           this.recoverPhase = 'turn';
           this.recoverTime = 0;
@@ -451,20 +474,74 @@ export class AIDriver {
         return { throttle: 0.75, brake: 0, steer, handbrake: false };
       }
 
-      // Phase 2: drive back towards the track. Aim at a point on the
-      // centreline ahead; if that point is behind the car, hold a hard turn
-      // until the nose comes around.
-      const targetU = (u2 + 20 / this.length) % 1;
-      this.curve.getPointAt(targetU, _pos);
-      const local = _pos.clone().sub(pos).applyQuaternion(q.clone().invert());
-      local.y = 0;
-      let steerErr = Math.atan2(local.x, local.z);
-      if (Math.abs(steerErr) > Math.PI * 0.75) steerErr = this.reverseDir * Math.PI * 0.75;
-      const steer = clamp(steerErr * 1.3, -this.maxSteer, this.maxSteer);
-      // power through the turn: a lazy throttle makes the car scrub around
-      // in a circle at walking pace for seconds
-      const throttle = Math.abs(steerErr) > 0.5 ? 0.85 : 0.65;
-      const done = align2 > 0.85 && Math.abs(lat2) < 3.0 && speed > 5;
+      // Phase 2: drive back to the road on its own.
+      //
+      // First problem: a car facing the wrong way. "Aim at the closest
+      // reachable point" would pick a spot a few metres ahead of its nose -
+      // zero steering cost - and the car would happily power down the track
+      // backwards. So while it is pointing mostly against the track, it
+      // turns around first (full-lock circle in drive) until the nose
+      // points back along the line.
+      if (align2 < 0.2) {
+        const headCross = fwd2.x * _tan.z - fwd2.z * _tan.x;
+        const headingErr = Math.atan2(headCross, align2);
+        const d = this.car.drivetrain;
+        if (d && d.gear !== 1) {
+          d.gear = 1;
+          d.shiftTimer = 0;
+          d.shiftCooldown = 0;
+        }
+        const steer = clamp(-headingErr * 1.5, -this.maxSteer, this.maxSteer);
+        // Full-lock circle in drive: from rest this rotates the car ~180
+        // deg in a ~12 m arc and ends facing along the track again (the
+        // handbrake cannot do that - it locks this car's driven rear
+        // axle, so from standstill the pivot does nothing). The car ends
+        // ~7 m to the side; phase 2 trims it back to the line.
+        // Fast: brake hard while turning - weight transfer kicks the nose in.
+        if (speed > 8) return { throttle: 0, brake: 0.85, steer, handbrake: false };
+        return { throttle: 0.7, brake: 0, steer, handbrake: false };
+      }
+      // Aligned enough to drive forward - make sure we are in drive before
+      // aiming at the road (a car arriving from the reverse phase is not).
+      if (this.car.drivetrain && this.car.drivetrain.gear < 1) {
+        this.car.drivetrain.gear = 1;
+        this.car.drivetrain.shiftTimer = 0;
+        this.car.drivetrain.shiftCooldown = 0;
+      }
+
+      // Otherwise pick the most reachable point of road near the car
+      // (smallest steering angle, slight bias towards track-ahead) and aim
+      // at it directly. The surface is flat, so the car can always get back
+      // no matter how far off it slid - genuine survival, not a reset.
+      let bestU = u2;
+      let bestScore = Infinity;
+      _invQ.copy(q).invert();
+      for (let k = -2; k <= 12; k++) {
+        // JS % keeps the sign of the dividend: near u=0 the backward
+        // candidates go negative and crash the curve lookup.
+        const uu = ((u2 + k * 0.004) % 1 + 1) % 1;
+        this.curve.getPointAt(uu, _target);
+        _local.subVectors(_target, pos);
+        _local.y = 0;
+        _local.applyQuaternion(_invQ);
+        const dist = Math.hypot(_local.x, _local.z);
+        if (dist < 0.5) continue;
+        const err = Math.atan2(_local.x, _local.z);
+        const score = Math.abs(err) + (k < 0 ? -k * 0.6 : 0);
+        if (score < bestScore) {
+          bestScore = score;
+          bestU = uu;
+        }
+      }
+      this.curve.getPointAt(bestU, _target);
+      _local.subVectors(_target, pos);
+      _local.y = 0;
+      _local.applyQuaternion(_invQ);
+      const steerErr = Math.atan2(_local.x, _local.z);
+      const steer = clamp(steerErr * 1.5, -this.maxSteer, this.maxSteer);
+      // power through the turn, ease off for a tight U-turn
+      const throttle = Math.abs(steerErr) > 1.1 ? 0.5 : 0.85;
+      const done = align2 > 0.8 && Math.abs(lat2) < 2.5 && speed > 4;
       if (done) {
         this.mode = 'race';
         this.stuckTime = 0;
@@ -473,9 +550,10 @@ export class AIDriver {
         this.recoverTime = 0;
         return { throttle: 0.7, brake: 0, steer: steer * 0.3, handbrake: false };
       }
-      if (this.recoverTime > 10) {
-        // everything failed (wedged somewhere weird) - last resort respawn
-        this._snapToTrack();
+      if (this.recoverTime > 25) {
+        // pathological corner case (wedged against a car for half a minute):
+        // right it in place and let it try again - still no position reset.
+        this._rightInPlace();
         return { throttle: 0.5, brake: 0, steer: 0, handbrake: false };
       }
       return { throttle, brake: 0, steer, handbrake: false };
@@ -535,7 +613,21 @@ export class AIDriver {
     // Grip-limited target from the precomputed braking pass. Looking a couple
     // of metres ahead catches the start of a braking zone without cutting the
     // corner speed everywhere.
-    const targetKmh = sampleLine(this.line.speed, this.u + 2 / this.length) * this.pace * 3.6;
+    let targetKmh = sampleLine(this.line.speed, this.u + 2 / this.length) * this.pace * 3.6;
+
+    // Follow governor: when a car is ahead, match its pace so the gap is
+    // held with speed instead of last-moment braking or a rear-end. Closing
+    // at c m/s means "the car ahead runs at v - c", so aiming for v - c - 4
+    // bleeds off the closing speed and settles into a stable following gap.
+    // Skipped while actively passing with a clear lane - that is the moment
+    // to keep the pace instead of matching the car being overtaken.
+    const sideClear = this.avoidSide !== 0 &&
+      ((this.avoidSide === -1 ? sense.left : sense.right) > 5);
+    if (blocking < 40 && this._closing > 0.5 && !sideClear) {
+      const followKmh = speedKmh - this._closing * 3.6 - 4;
+      targetKmh = Math.min(targetKmh, Math.max(25, followKmh));
+    }
+
     let throttle = 0;
     let brake = 0;
     const speedErr = targetKmh - speedKmh;
