@@ -425,6 +425,14 @@ export class AIDriver {
       fwd2.normalize();
       const align2 = fwd2.dot(_tan);
 
+      // Too far off to be fun watching: a car 25+ m into the grass would
+      // spend several seconds arcing back on its own. Put it back on the
+      // line immediately instead (cheap teleport, reads as "rejoining").
+      if (Math.abs(lat2) > 25) {
+        this._snapToTrack();
+        return { throttle: 0.5, brake: 0, steer: 0, handbrake: false };
+      }
+
       // Phase 1: back up briefly with a constant steering direction so the
       // nose swings towards the road. Alternating the sign every frame (as
       // the old code did when cross ~ 0) cancels the turn out entirely.

@@ -5,6 +5,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { Vehicle } from './vehicle/vehicle.js';
 import { CAR } from './vehicle/config.js';
 import { createTrack } from './render/track.js';
+import { createScenery } from './render/scenery.js';
 import { createCarMesh } from './render/carMesh.js';
 import { createSkidMarks } from './render/skidMarks.js';
 import { createTireSmoke } from './render/tireSmoke.js';
@@ -46,7 +47,8 @@ renderer.toneMappingExposure = 1.02;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0xb9cfe0, 260, 1500);
+// long atmospheric fade: the world has hills on the horizon now
+scene.fog = new THREE.Fog(0xc2d4e2, 350, 2600);
 
 const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.3, 6000);
 
@@ -116,8 +118,15 @@ sun.shadow.normalBias = 0.025;
 scene.add(sun);
 scene.add(sun.target);
 
+// the field's livery, also used to paint the pit boxes and building facade
+const OPPONENT_COLORS = [
+  0xe23b2f, 0xf08a24, 0xf2c230, 0x2fae58, 0x18b6a6,
+  0x7a4fd0, 0xd84a9f, 0xe8eef4, 0x6b7480, 0x8c1b1b,
+];
+
 // --------------------------------------------------------------------- track
 const track = createTrack(scene);
+createScenery(scene, track, [0x1f6bff, ...OPPONENT_COLORS]);
 
 // ----------------------------------------------------------------------- car
 const spawn = new THREE.Vector3(track.start.x, 0.46, track.start.z);
@@ -130,7 +139,8 @@ const car = new Vehicle({
 // scene queries need one step before the raycasts work
 world.step();
 
-const carMesh = createCarMesh(CAR);
+// number 1 = player; a white centre stripe marks it as "your car"
+const carMesh = createCarMesh({ ...CAR, number: '1', stripe: true });
 scene.add(carMesh.root);
 carMesh.root.visible = true;
 
@@ -138,10 +148,6 @@ carMesh.root.visible = true;
 // A small field of AI cars on a staggered grid. Each one has a slightly
 // different speed target so the pack spreads out and they actually overtake.
 const OPPONENT_COUNT = 10;
-const OPPONENT_COLORS = [
-  0xe23b2f, 0xf08a24, 0xf2c230, 0x2fae58, 0x18b6a6,
-  0x7a4fd0, 0xd84a9f, 0xe8eef4, 0x6b7480, 0x8c1b1b,
-];
 const GRID_ROW_GAP = 12;   // m between rows
 const GRID_COL_OFFSET = 3; // m left/right of the centreline
 
@@ -175,7 +181,7 @@ for (let i = 0; i < OPPONENT_COUNT; i++) {
   });
   const paint = OPPONENT_COLORS[i];
   const paintDark = new THREE.Color(paint).multiplyScalar(0.62).getHex();
-  const mesh = createCarMesh({ ...CAR, paint, paintDark, simple: true });
+  const mesh = createCarMesh({ ...CAR, paint, paintDark, simple: true, number: String(i + 2) });
   scene.add(mesh.root);
   // laneOffset is only used during the launch phase: it holds the grid
   // column until the field is rolling, then the racing line takes over.
