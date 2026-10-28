@@ -343,6 +343,9 @@ export function createTrack(scene) {
         transparent: true,
         opacity: 0.5,
         depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+        polygonOffsetUnits: -3,
       }),
     );
     rubber.renderOrder = 1;
@@ -350,7 +353,17 @@ export function createTrack(scene) {
   }
 
   // white edge lines
-  const lineMat = new THREE.MeshStandardMaterial({ color: 0xd8dde2, roughness: 0.7 });
+  // The asphalt carries polygonOffset(-1,-1) (to beat the grass below it),
+  // which pushes its depth toward the camera and can steal the depth test
+  // from markings only a couple of cm above it. Every painted layer gets a
+  // stronger -3 offset so it is guaranteed to win that fight at any range.
+  const lineMat = new THREE.MeshStandardMaterial({
+    color: 0xd8dde2,
+    roughness: 0.7,
+    polygonOffset: true,
+    polygonOffsetFactor: -3,
+    polygonOffsetUnits: -3,
+  });
   lineMat.depthWrite = false;
   for (const s of [-1, 1]) {
     const line = new THREE.Mesh(
@@ -372,6 +385,9 @@ export function createTrack(scene) {
         opacity: 0.45,
         roughness: 0.8,
         depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+        polygonOffsetUnits: -3,
       }),
     );
     dash.renderOrder = 2;
@@ -385,8 +401,15 @@ export function createTrack(scene) {
   // on/off as the radius wobbles around a threshold.
   {
     const kerbTex = kerbTexture();
-    const kerbMat = new THREE.MeshStandardMaterial({ map: kerbTex, roughness: 0.75 });
-    kerbMat.depthWrite = false; // decal: never lose the depth fight with the asphalt
+    // The kerb is now a real 3D raised object (top + side faces), so it writes
+    // depth and occludes correctly; double-sided so face winding can never
+    // make a strip vanish. Its 6 cm height clears the asphalt's depth test at
+    // any distance the kerb is actually seen from.
+    const kerbMat = new THREE.MeshStandardMaterial({
+      map: kerbTex,
+      roughness: 0.75,
+      side: THREE.DoubleSide,
+    });
     const N = line.n;
     const kerbGeo = new THREE.BufferGeometry();
     const pos = [];
@@ -423,6 +446,12 @@ export function createTrack(scene) {
         }
       }
     }
+    // Real 3D raised curb: a top face plus an inner (road-facing) and outer
+    // (run-off-facing) side face, so from chase/bumper angles it reads as a
+    // physical kerb with height instead of a flat sticker floating above the
+    // asphalt. Top sits 6 cm above the road, sides meet the tarmac at 2 cm.
+    const KT = 0.08; // kerb top height
+    const KB = 0.02; // kerb bottom (asphalt level)
     for (let i = 0; i <= N; i++) {
       const u = i / N;
       curve.getPointAt(u, p);
@@ -434,16 +463,30 @@ export function createTrack(scene) {
       if (sides.length === 0) continue;
       const v = dist / 2.4;
       for (const sgn of sides) {
-        const cx = p.x + side.x * sgn * K;
-        const cz = p.z + side.z * sgn * K;
-        const halfX = side.x * 0.75;
-        const halfZ = side.z * 0.75;
+        const ox = side.x * sgn; // outward horizontal normal
+        const oz = side.z * sgn;
+        const inX = p.x + side.x * sgn * (K - 0.75);
+        const inZ = p.z + side.z * sgn * (K - 0.75);
+        const outX = p.x + side.x * sgn * (K + 0.75);
+        const outZ = p.z + side.z * sgn * (K + 0.75);
         const a = pos.length / 3;
-        pos.push(cx - halfX, 0.08, cz - halfZ, cx + halfX, 0.08, cz + halfZ);
+        // top face (inner, outer)
+        pos.push(inX, KT, inZ, outX, KT, outZ);
         nor.push(0, 1, 0, 0, 1, 0);
         uv.push(0, v, 1, v);
+        // inner side face (road-facing)
+        pos.push(inX, KT, inZ, inX, KB, inZ);
+        nor.push(-ox, 0, -oz, -ox, 0, -oz);
+        uv.push(0, v, 1, v);
+        // outer side face (run-off-facing)
+        pos.push(outX, KT, outZ, outX, KB, outZ);
+        nor.push(ox, 0, oz, ox, 0, oz);
+        uv.push(0, v, 1, v);
         if (i < N) {
-          idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+          const b = a + 6; // next sample starts here (6 verts per sample)
+          idx.push(a, b, a + 1, a + 1, b, b + 1);     // top
+          idx.push(a + 2, b + 2, a + 3, a + 3, b + 2, b + 3); // inner side
+          idx.push(a + 4, b + 4, a + 5, a + 5, b + 4, b + 5); // outer side
         }
       }
     }
@@ -474,7 +517,13 @@ export function createTrack(scene) {
     chk.repeat.set(7, 1);
     const line = new THREE.Mesh(
       new THREE.PlaneGeometry(ROAD_HALF_WIDTH * 2, 2.2),
-      new THREE.MeshStandardMaterial({ map: chk, roughness: 0.7 }),
+      new THREE.MeshStandardMaterial({
+        map: chk,
+        roughness: 0.7,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+        polygonOffsetUnits: -3,
+      }),
     );
     line.material.depthWrite = false;
     line.renderOrder = 5; // painted over the lane lines at the start line
@@ -492,6 +541,9 @@ export function createTrack(scene) {
         map: gridTexture(),
         transparent: true,
         depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+        polygonOffsetUnits: -3,
       }),
     );
     grid.rotation.x = -Math.PI / 2;

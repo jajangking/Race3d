@@ -334,7 +334,11 @@ export class Input {
       handbrake = handbrake || gp.handbrake;
     }
 
-    s.steer = Math.max(-1, Math.min(1, steer));
+    // PLAYER steering is flipped at the very end. In actual play (reported by
+    // the player, tested in the real game) the slider/keys felt left-right
+    // inverted, so the final player steer is negated. The AI does not use this
+    // class, so the field is unaffected.
+    s.steer = -Math.max(-1, Math.min(1, steer));
     s.throttle = throttle;
     s.brake = brake;
     s.handbrake = handbrake;
