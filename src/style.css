@@ -962,3 +962,40 @@ kbd {
   pointer-events: none;
   user-select: none;
 }
+
+/* ------------------------------------------------- touch port of keys ---- */
+/* TC / ESC pills are now tap toggles (port of T / Y keys) */
+.pill--tap {
+  appearance: none;
+  -webkit-appearance: none;
+  pointer-events: auto;
+  cursor: pointer;
+  font: inherit;
+  min-height: 28px;
+}
+.pill--tap:active {
+  transform: scale(0.94);
+}
+/* the HUD CAM button is redundant with the spectate UI's CAM in AI-race mode */
+body.is-spectate #btn-cam-hud {
+  display: none;
+}
+/* bigger touch targets on real phones */
+@media (pointer: coarse) {
+  .pill--tap {
+    min-height: 40px;
+    min-width: 48px;
+    font-size: 12px;
+    padding: 6px 12px;
+  }
+  .respawn {
+    min-height: 44px;
+    min-width: 48px;
+    font-size: 12px;
+  }
+  .sbtn {
+    min-height: 40px;
+    min-width: 56px;
+    font-size: 11px;
+  }
+}

@@ -232,6 +232,12 @@ export class SpectatorCamera {
       this._droneShot(dt);
       fov = 50;
     }
+    // Portrait phones: keep the broadcast frame from being cropped
+    // horizontally the same way the chase cam widens (same math).
+    if (this.camera.aspect < 1) {
+      const tanH = Math.tan(THREE.MathUtils.degToRad(fov / 2)) / this.camera.aspect;
+      fov = Math.min(95, THREE.MathUtils.radToDeg(2 * Math.atan(tanH)));
+    }
     const k = this._k;
     const kUp = this._kUp;
 

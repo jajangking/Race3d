@@ -12,8 +12,8 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>RACE3D — raycast vehicle sim</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <script type="module" crossorigin src="./assets/index-CuxM4oQX.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-BpWRkoP4.css">
+    <script type="module" crossorigin src="./assets/index-dWUSLpcU.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-Dza2fqMJ.css">
   </head>
   <body>
     <canvas id="scene"></canvas>
@@ -27,8 +27,8 @@
             <span class="brand__name">RACE<b>3D</b></span>
           </div>
           <div class="assists assists--row">
-            <span class="pill" id="pill-tc">TC</span>
-            <span class="pill" id="pill-esc">ESC</span>
+            <button class="pill pill--tap" id="pill-tc" type="button" title="Traction control (T)" aria-label="Toggle traction control">TC</button>
+            <button class="pill pill--tap" id="pill-esc" type="button" title="Stability control (Y)" aria-label="Toggle stability control">ESC</button>
             <span class="pill pill--warn" id="pill-abs">LOCK</span>
           </div>
         </div>
@@ -48,6 +48,7 @@
               <span class="timing__value" id="top">—</span>
             </div>
           </div>
+        <button class="respawn respawn--top" id="btn-cam-hud" type="button" title="Cycle camera (C)" aria-label="Cycle camera">CAM</button>
         <button class="respawn respawn--top" id="respawn" type="button" title="Respawn (R)" aria-label="Respawn">↻</button>
       </div>
     </div>
@@ -148,7 +149,7 @@
     </div>
 
     <!-- build tag: proves which bundle is actually loaded (cache check) -->
-    <div class="build-tag" id="buildTag">BUILD v3 · road+kerb+steer fix</div>
+    <div class="build-tag" id="buildTag">BUILD v4 · touch+portrait+AI side-by-side</div>
 
   </body>
 </html>

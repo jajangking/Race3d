@@ -60,6 +60,7 @@ for (let i = 0; i < N; i++) {
     lineScale: LINE[i],
     laneBias: BIAS[i],
     laneOffset: (col === 0 ? -COL : COL) + (((i * 5) % 7) - 3) * 0.18,
+    parity: i % 2,
   }, world);
   driver.u = slot.u;
   cars.push(car);

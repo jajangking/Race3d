@@ -198,6 +198,7 @@ for (let i = 0; i < OPPONENT_COUNT; i++) {
     lineScale: OPPONENT_LINE[i],
     laneBias: OPPONENT_BIAS[i],
     laneOffset,
+    parity: i % 2,
   }, world);
   driver.u = slot.u;
   opponents.push({ car: opponentCar, mesh, driver, laneOffset });
@@ -244,16 +245,22 @@ function cycleFocus() {
 }
 input.on('camera', cycleCamera);
 input.on('focus', cycleFocus);
+// touch port of the C / T / Y keys (this game is primarily played on phones)
 document.getElementById('btn-cam')?.addEventListener('click', cycleCamera);
 document.getElementById('btn-car')?.addEventListener('click', cycleFocus);
-input.on('tc', () => {
+document.getElementById('btn-cam-hud')?.addEventListener('click', cycleCamera);
+const toggleTC = () => {
   car.assists.tc = !car.assists.tc;
   hud.setAssist('tc', car.assists.tc);
-});
-input.on('esc', () => {
+};
+const toggleESC = () => {
   car.assists.esc = !car.assists.esc;
   hud.setAssist('esc', car.assists.esc);
-});
+};
+input.on('tc', toggleTC);
+input.on('esc', toggleESC);
+document.getElementById('pill-tc')?.addEventListener('click', toggleTC);
+document.getElementById('pill-esc')?.addEventListener('click', toggleESC);
 
 // --------------------------------------------------------------- start gate
 let started = false;
@@ -280,6 +287,7 @@ function begin(mode = 'drive') {
       lineScale: 0.97,
       laneBias: 0,
       laneOffset: 0,
+      parity: 0,
     }, world);
     driver.u = 0;
     opponents.push({ car, mesh: carMesh, driver, laneOffset: 0, isPlayer: true });

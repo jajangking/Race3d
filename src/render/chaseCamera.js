@@ -44,6 +44,18 @@ export class ChaseCamera {
     }
   }
 
+  /**
+   * Portrait phones have a very narrow horizontal FOV at a fixed 58°
+   * vertical (aspect 0.5 -> ~31° horizontal), so the kerbs and road edges
+   * at +/-8 m fall outside the frame entirely. Keep the horizontal coverage
+   * roughly constant by widening the vertical FOV in portrait.
+   */
+  baseFov(aspect) {
+    if (aspect >= 1) return 58;
+    const tanH = Math.tan(THREE.MathUtils.degToRad(58 / 2)) / aspect;
+    return Math.min(95, THREE.MathUtils.radToDeg(2 * Math.atan(tanH)));
+  }
+
   snap(car) {
     this.initialised = false;
     this.update(0.016, car, true);
@@ -105,7 +117,7 @@ export class ChaseCamera {
     cam.lookAt(_look);
     cam.rotateZ(roll);
 
-    const fovTarget = 58 + THREE.MathUtils.clamp(speed * 0.55, 0, 18) + (this.mode === 2 ? 10 : 0);
+    const fovTarget = this.baseFov(cam.aspect) + THREE.MathUtils.clamp(speed * 0.55, 0, 18) + (this.mode === 2 ? 10 : 0);
     this.targetFov += (fovTarget - this.targetFov) * Math.min(1, dt * 3);
     if (Math.abs(cam.fov - this.targetFov) > 0.01) {
       cam.fov = this.targetFov;

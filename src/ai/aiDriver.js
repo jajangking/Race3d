@@ -93,6 +93,12 @@ export class AIDriver {
     this._otSide = 0; // committed braking-zone overtake side (+1 / -1)
     this._otReleaseU = 0; // corner apex u; the move ends 30 m past it
     this._otCooldown = 0; // seconds before another pass may be committed
+    this._jamL = 0; // seconds a car has been jammed against our left side
+    this._jamR = 0; // ...and our right side
+    this._jamYield = 0; // 0-1 longitudinal yield applied while a jam persists
+    // deterministic tiebreak for a perfectly level jam (sensors cannot tell
+    // which car is ahead then): the odd-parity car yields, the even one goes
+    this.parity = opts.parity ?? 1;
 
     // lightweight behaviour stats (read by the sim test scripts)
     this.stats = { recover: 0, right: 0, offTime: 0 };
@@ -396,14 +402,51 @@ export class AIDriver {
         avoidSteer += this.avoidSide * 0.45 * strength * speedDamp;
       }
     }
-    // side pressure: steer away from a car alongside. The old fixed 0.35
-    // only started at 1.8 m, which is already touching width for two cars.
-    if (sense.tightLeft) avoidSteer += clamp((2.8 - sense.left) * 0.22 + 0.08, 0.08, 0.32) * (0.5 + 0.5 * speedDamp);
-    if (sense.tightRight) avoidSteer -= clamp((2.8 - sense.right) * 0.22 + 0.08, 0.08, 0.32) * (0.5 + 0.5 * speedDamp);
     // On the launch straight the field is still merging from the grid lanes:
     // here a car brakes and holds its lane instead of swerving. Swerving at
     // 100+ km/h on a 14 m wide straight is what sent the old AI onto the grass.
     if (!this.startMergeDone) avoidSteer *= 0.2;
+    // Side pressure: gentle and late. The old version started at 2.8 m with
+    // up to 0.32 of steer - any normal side-by-side moment (pack spacing is
+    // 2-3 m) made both cars flinch, which read as oversteering and made the
+    // pack weave. Now: nothing until 2.2 m, a soft ramp, and a low 0.2 cap,
+    // so cars running alongside just keep going. If a close moment PERSISTS
+    // (line-keeping can out-power the nudge in a corner and the cars lock
+    // together), the push escalates with time until they split. Deliberately
+    // NOT scaled by the merge damp: cars wheel-to-wheel at launch must still
+    // be able to separate.
+    const sideJam = (gap, t) => {
+      if (gap >= 2.0) return 0;
+      const base = clamp((2.0 - gap) / 1.0, 0, 1) * 0.15;
+      // escalate only at actual contact range, so a dense but free-flowing
+      // pack (1.4-2.0 m apart) is not pushed around
+      const esc = gap < 1.4 ? clamp(t / 2.0, 0, 1) * 0.25 : 0;
+      return base + esc;
+    };
+    this._jamL = sense.left < 1.4 ? this._jamL + dt : Math.max(0, this._jamL - dt * 2);
+    this._jamR = sense.right < 1.4 ? this._jamR + dt : Math.max(0, this._jamR - dt * 2);
+    avoidSteer += sideJam(sense.left, this._jamL) - sideJam(sense.right, this._jamR);
+
+    // Lateral pushing has a limit: in a corner the line-keeping pull can
+    // out-steer the correction, and at the road edge the edge rule
+    // overrides avoidSteer entirely - a locked pair can then steer apart
+    // forever without splitting. When the jam outlasts the lateral attempt,
+    // separate LONGITUDINALLY instead: the car behind bleeds speed, the
+    // leader keeps going (maju aja). A neighbour seen on my front diagonal
+    // is ahead of me (I yield); one only on my rear diagonal is behind (I
+    // hold, it yields). A perfectly level pair sees neither - parity breaks
+    // the tie so the two cannot slow together.
+    const jamYieldSide = (jam, diag) => {
+      if (jam < 1.2) return 0;
+      const f = clamp((jam - 1.2) / 1.2, 0, 1);
+      if (diag < 9) return f; // neighbour ahead -> I yield
+      if (diag > 24) return f * 0.1; // neighbour behind -> I hold
+      return f * (this.parity === 1 ? 1 : 0.1); // level pair -> parity
+    };
+    this._jamYield = Math.max(
+      jamYieldSide(this._jamL, sense.frontLeft),
+      jamYieldSide(this._jamR, sense.frontRight),
+    );
 
     // stuck detection: only while actually asking to drive. A car sitting on
     // its own (no input) is not "stuck", and a launch from 0 is normal.
@@ -803,6 +846,15 @@ export class AIDriver {
       }
     } else {
       this._following = false;
+    }
+
+    // Longitudinal jam resolution (set in the avoidance block): while a car
+    // is physically locked against my side, cap the target below my current
+    // speed so the pair opens up fore-aft. The car that is behind bleeds the
+    // full amount; the leader (and the parity winner of a level pair) only
+    // trims a little, so the split happens by pulling away, not braking hard.
+    if (this._jamYield > 0.05) {
+      targetKmh = Math.min(targetKmh, Math.max(20, speedKmh - 8 * this._jamYield));
     }
 
     let throttle = 0;
