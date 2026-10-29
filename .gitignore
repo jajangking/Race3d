@@ -1,2 +1,5 @@
 *.log
 .DS_Store
+
+# scratch diagnostic probes (local debugging, not part of the game)
+scripts/.*.mjs

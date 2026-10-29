@@ -903,6 +903,191 @@ body.is-spectate .hud__bottom {
   box-shadow: 0 16px 40px rgba(30, 90, 255, 0.4);
 }
 
+/* ------------------------------------------------------------- city mode */
+.intro__go--city {
+  background: linear-gradient(135deg, #0e9d78, #0a5c48);
+  box-shadow: 0 12px 32px rgba(14, 157, 120, 0.3);
+  font-size: 11px;
+}
+
+.intro__go--city:hover {
+  box-shadow: 0 16px 40px rgba(14, 157, 120, 0.44);
+}
+
+.city-cam {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  display: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 6px 14px 6px 16px;
+  border-radius: 999px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+body.is-city .city-cam {
+  display: block;
+}
+
+/* hidden unless body.is-city (autonomous city mode) */
+.city-ui {
+  position: fixed;
+  left: 50%;
+  bottom: calc(14px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 9;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+  width: min(340px, calc(100vw - 24px));
+}
+
+body.is-city .city-ui {
+  display: flex;
+}
+
+.city-ui__card {
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 14px 12px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+}
+
+.city-ui__nav {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.city-ui__turn {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--ink);
+}
+
+.city-ui__turn.is-turn {
+  color: #ffb020;
+}
+
+.city-ui__dist {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.city-ui__dest {
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--dim);
+}
+
+.city-ui__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.city-ui__speedwrap {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.city-ui__speed {
+  font-family: var(--mono);
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.city-ui__unit {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--dim);
+}
+
+.city-ui__light {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #2a2d31;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.city-ui__light.is-green {
+  background: #2fd97c;
+  box-shadow: 0 0 10px rgba(47, 217, 124, 0.8);
+}
+
+.city-ui__light.is-yellow {
+  background: #ffc21a;
+  box-shadow: 0 0 10px rgba(255, 194, 26, 0.8);
+}
+
+.city-ui__light.is-red {
+  background: #ff4438;
+  box-shadow: 0 0 10px rgba(255, 68, 56, 0.8);
+}
+
+.city-ui__btns {
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.sbtn--back {
+  border-color: rgba(255, 130, 96, 0.5);
+}
+
+/* race-only UI that does not make sense in city mode */
+body.is-city .touch {
+  display: none !important;
+}
+
+body.is-city #speedo {
+  display: none;
+}
+
+body.is-city .timing {
+  display: none;
+}
+
+body.is-city #btn-cam-hud {
+  display: none;
+}
+
+body.is-city #respawn {
+  display: none;
+}
+
+body.is-city .assists {
+  display: none;
+}
+
+body.is-city #standings {
+  display: none !important;
+}
+
 @media (max-width: 460px) {
   .intro__modes {
     grid-template-columns: 1fr;

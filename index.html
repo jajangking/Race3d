@@ -72,8 +72,32 @@
         </div>
       </div>
 
-      <!-- spectator leaderboard (AI vs AI mode) -->
-      <div class="standings" id="standings" hidden>
+    <!-- city (autonomous driving) UI -->
+    <div class="city-cam" id="city-cammode">CHASE</div>
+    <div class="city-ui" id="city-ui">
+      <div class="city-ui__card">
+        <div class="city-ui__nav">
+          <span class="city-ui__turn" id="city-turn">LANJUT</span>
+          <span class="city-ui__dist" id="city-dist">—</span>
+        </div>
+        <div class="city-ui__dest" id="city-dest">MENUJU —</div>
+        <div class="city-ui__row">
+          <div class="city-ui__speedwrap">
+            <span class="city-ui__speed" id="city-speed">0</span>
+            <span class="city-ui__unit">km/h</span>
+          </div>
+          <span class="city-ui__light" id="city-light" aria-label="Lampu lalu lintas"></span>
+        </div>
+      </div>
+      <div class="city-ui__btns">
+        <button class="sbtn" id="city-btn-cam" type="button" title="Cycle camera (C)">KAMERA</button>
+        <button class="sbtn" id="city-btn-car" type="button" title="Cycle focus car (X)">KENDARAAN</button>
+        <button class="sbtn sbtn--back" id="city-btn-back" type="button">KEMBALI</button>
+      </div>
+    </div>
+
+    <!-- spectator leaderboard (AI vs AI mode) -->
+    <div class="standings" id="standings" hidden>
         <div class="standings__head">
           <span>POS</span><span></span><span>CAR</span><span>LAP</span>
         </div>
@@ -122,7 +146,9 @@
           A car built from springs, dampers, a Pacejka-style tyre model and a torque curve on top of
           a Rapier rigid body. Nothing about the handling is scripted.
           <b>Drive it yourself</b> — or sit in the pit wall and watch the field race
-          <b>AI vs AI</b> from the broadcast cameras.
+          <b>AI vs AI</b> from the broadcast cameras. Or step into
+          <b>KOTA</b>: a grid of city streets where every car drives itself —
+          lane keeping, traffic lights, turn signals and all.
         </p>
         <dl class="specs">
           <div><dt>ENGINE</dt><dd>3.0 inline-6 · 378 Nm</dd></div>
@@ -134,6 +160,7 @@
         <div class="intro__modes">
           <button class="intro__go" id="start" type="button">DRIVE</button>
           <button class="intro__go intro__go--watch" id="start-watch" type="button">AI RACE · SPECTATE</button>
+          <button class="intro__go intro__go--city" id="start-city" type="button">KOTA · DRIVING OTONOM</button>
         </div>
         <div class="intro__keys">
           <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> drive</span>
@@ -142,13 +169,13 @@
           <span><kbd>Y</kbd> stability</span>
           <span><kbd>R</kbd> respawn</span>
           <span><kbd>C</kbd> camera</span>
-          <span><kbd>X</kbd> focus car (spectate)</span>
+          <span><kbd>X</kbd> fokus kendaraan (spectate/kota)</span>
         </div>
       </div>
     </div>
 
     <!-- build tag: proves which bundle is actually loaded (cache check) -->
-    <div class="build-tag" id="buildTag">BUILD v5 · no kerb + engine audio</div>
+    <div class="build-tag" id="buildTag">BUILD v6 · + KOTA driving otonom</div>
 
     <script type="module" src="./src/main.js"></script>
   </body>

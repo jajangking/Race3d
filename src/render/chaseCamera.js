@@ -17,7 +17,8 @@ export class ChaseCamera {
   constructor(camera, track) {
     this.camera = camera;
     this.track = track;
-    this.mode = 0; // 0 = chase, 1 = far chase, 2 = bumper
+    this.city = false; // city mode adds a high overview cam (mode 3)
+    this.mode = 0; // 0 = chase, 1 = far chase, 2 = bumper, 3 = city high
     this.distance = 7.2;
     this.height = 2.35;
     this.lookAhead = 5.5;
@@ -28,7 +29,8 @@ export class ChaseCamera {
   }
 
   cycle() {
-    this.mode = (this.mode + 1) % 3;
+    const top = this.city ? 4 : 3;
+    this.mode = (this.mode + 1) % top;
     if (this.mode === 0) {
       this.distance = 7.2;
       this.height = 2.35;
@@ -37,6 +39,11 @@ export class ChaseCamera {
       this.distance = 12;
       this.height = 4.6;
       this.lookAhead = 3;
+    } else if (this.mode === 3) {
+      // city overview
+      this.distance = 11;
+      this.height = 19;
+      this.lookAhead = 7;
     } else {
       this.distance = 0.6;
       this.height = 0.75;
@@ -80,6 +87,14 @@ export class ChaseCamera {
       _desired.z += t.z;
       _look.copy(_fwd).multiplyScalar(18).add(_desired);
       _look.y += 0.4;
+    } else if (this.mode === 3) {
+      // city overview: high behind the car, level (no roll)
+      _desired.copy(_fwd).multiplyScalar(-this.distance).add(
+        _vel.set(t.x, t.y, t.z),
+      );
+      _desired.y += this.height;
+      _look.copy(_fwd).multiplyScalar(this.lookAhead).add(_vel.set(t.x, t.y, t.z));
+      _look.y += 0.5;
     } else {
       // behind the car, but don't follow its roll (up stays mostly world-up)
       _desired.copy(_fwd).multiplyScalar(-distance).add(
@@ -112,7 +127,7 @@ export class ChaseCamera {
 
     // aim with a tiny amount of lateral G so the horizon leans in corners
     const lean = THREE.MathUtils.clamp(car.telemetry.gLat, -1.6, 1.6);
-    const roll = this.mode === 2 ? 0 : lean * 0.012;
+    const roll = this.mode === 2 || this.mode === 3 ? 0 : lean * 0.012;
     cam.up.set(0, 1, 0);
     cam.lookAt(_look);
     cam.rotateZ(roll);

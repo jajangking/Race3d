@@ -426,6 +426,25 @@ export function createCarMesh(cfg = CAR) {
   bar.position.set(0, 0.72, -2.245);
   body.add(bar);
 
+  // amber turn signals (sein): rear + front, one material per side per car
+  // so update() can blink them from car.turnSignal (-1 left, +1 right)
+  const signalMatL = new THREE.MeshStandardMaterial({
+    color: 0x402304,
+    emissive: 0xff9d00,
+    emissiveIntensity: 0,
+    roughness: 0.3,
+  });
+  const signalMatR = new THREE.MeshStandardMaterial({
+    color: 0x402304,
+    emissive: 0xff9d00,
+    emissiveIntensity: 0,
+    roughness: 0.3,
+  });
+  for (const s of [-1, 1]) {
+    body.add(box(0.2, 0.075, 0.06, s < 0 ? signalMatL : signalMatR, s * 0.86, 0.7, -2.245));
+    body.add(box(0.18, 0.07, 0.055, s < 0 ? signalMatL : signalMatR, s * 0.86, 0.63, 2.29));
+  }
+
   // exhausts
   const pipeMat = mat(0x8e969e, { roughness: 0.28, metalness: 0.96 });
   for (const s of [-1, 1]) {
@@ -499,6 +518,12 @@ export function createCarMesh(cfg = CAR) {
       const braking = car.telemetry.brake > 0.05 || car.telemetry.handbrake;
       tailMat.emissiveIntensity = braking ? 4.5 : 1.6;
       discMat.emissiveIntensity = braking ? 1.5 : 0.1;
+
+      // blinking turn signals (1.5 flashes/s) driven by car.turnSignal
+      const sig = car.turnSignal || 0;
+      const blinkOn = Math.floor(performance.now() / 333) % 2 === 0;
+      signalMatL.emissiveIntensity = sig === -1 && blinkOn ? 2.6 : 0;
+      signalMatR.emissiveIntensity = sig === 1 && blinkOn ? 2.6 : 0;
     },
 
     setVisible(v) {

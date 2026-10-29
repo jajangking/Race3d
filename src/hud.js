@@ -20,6 +20,12 @@ export class Hud {
       cammode: $('cammode'),
       standings: $('standings'),
       standingsBody: $('standings-body'),
+      cityCam: $('city-cammode'),
+      cityTurn: $('city-turn'),
+      cityDist: $('city-dist'),
+      cityDest: $('city-dest'),
+      citySpeed: $('city-speed'),
+      cityLight: $('city-light'),
     };
     this.last = {};
     this.topSpeed = 0;
@@ -108,6 +114,51 @@ export class Hud {
 
   setBest(seconds) {
     this.best100 = seconds;
+  }
+
+  /** Camera label for city mode (its own pill; #cammode is spectate-only). */
+  setCityCam(label) {
+    if (!this.el.cityCam) return;
+    if (this.last.cityCam !== label) {
+      this.el.cityCam.textContent = label;
+      this.last.cityCam = label;
+    }
+  }
+
+  /**
+   * City (autonomous driving) panel. payload =
+   * { speedKmh, turn: 'LANJUT'|'KIRI'|'KANAN', dist: m|null, dest, light }
+   */
+  updateCity(p) {
+    const speed = Math.round(p.speedKmh);
+    if (this.last.citySpeed !== speed) {
+      if (this.el.citySpeed) this.el.citySpeed.textContent = String(speed);
+      this.last.citySpeed = speed;
+    }
+    const turnKey = p.turn + '|' + (p.dist === null ? -1 : Math.round(p.dist));
+    if (this.last.cityTurn !== turnKey) {
+      this.last.cityTurn = turnKey;
+      if (this.el.cityTurn) {
+        this.el.cityTurn.textContent = p.turn;
+        this.el.cityTurn.classList.toggle('is-turn', p.turn !== 'LANJUT');
+      }
+      if (this.el.cityDist) {
+        this.el.cityDist.textContent =
+          p.dist === null || p.dist >= 59 ? '' : p.dist + ' m';
+      }
+    }
+    if (this.last.cityDest !== p.dest) {
+      this.last.cityDest = p.dest;
+      if (this.el.cityDest) this.el.cityDest.textContent = 'MENUJU ' + p.dest;
+    }
+    if (this.last.cityLight !== p.light) {
+      this.last.cityLight = p.light;
+      const el = this.el.cityLight;
+      if (el) {
+        el.classList.remove('is-green', 'is-yellow', 'is-red');
+        if (p.light) el.classList.add('is-' + p.light);
+      }
+    }
   }
 
   update(car, sessionTime) {
