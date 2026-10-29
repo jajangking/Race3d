@@ -24,6 +24,7 @@ export class Hud {
       cityTurn: $('city-turn'),
       cityDist: $('city-dist'),
       cityDest: $('city-dest'),
+      cityCar: $('city-car'),
       citySpeed: $('city-speed'),
       cityLight: $('city-light'),
     };
@@ -150,6 +151,10 @@ export class Hud {
     if (this.last.cityDest !== p.dest) {
       this.last.cityDest = p.dest;
       if (this.el.cityDest) this.el.cityDest.textContent = 'MENUJU ' + p.dest;
+    }
+    if (this.last.cityCar !== p.carLabel) {
+      this.last.cityCar = p.carLabel;
+      if (this.el.cityCar) this.el.cityCar.textContent = p.carLabel;
     }
     if (this.last.cityLight !== p.light) {
       this.last.cityLight = p.light;

@@ -237,8 +237,8 @@ let cityTime = 0;
 let cityFocus = -1; // -1 = the player's car, 0..n = an AI car
 // city population: the 10 race opponents PLUS extra traffic-only cars, so
 // the streets feel busy. The extras exist only in KOTA mode (created in
-// setupCity), so the race scene stays lean.
-const CITY_EXTRA_CARS = 15;
+// setupCity), so the race scene stays lean. 35 AI cars + you = 36 vehicles.
+const CITY_EXTRA_CARS = 25;
 const cityExtras = []; // traffic-only cars { car, mesh, driver }
 let cityField = null;  // every AI car on the road (opponents + extras)
 const CITY_CAM_LABELS = ['CHASE', 'HOKA', 'BUMPER', 'OVERVIEW'];
@@ -381,9 +381,9 @@ const _rCityQ = new THREE.Quaternion();
  * the nearest road lane, facing the direction it was already travelling.
  * Outside the grid entirely -> the central intersection.
  */
-function respawnCity() {
-  const t = car.body.translation();
-  const q = car.body.rotation();
+function respawnCity(target = car) {
+  const t = target.body.translation();
+  const q = target.body.rotation();
   _rCityF.set(0, 0, 1).applyQuaternion(_rCityQ.set(q.x, q.y, q.z, q.w));
   _rCityF.y = 0;
   const fl = Math.hypot(_rCityF.x, _rCityF.z);
@@ -407,16 +407,16 @@ function respawnCity() {
   }
   // right-hand lane of the chosen travel direction
   const r = { x: dz, z: -dx };
-  car.reset(
+  target.reset(
     new THREE.Vector3(px + r.x * CITY.lane, 0.48, pz + r.z * CITY.lane),
     new THREE.Quaternion().setFromUnitVectors(
       new THREE.Vector3(0, 0, 1),
       new THREE.Vector3(dx, 0, dz),
     ),
   );
-  car.drivetrain.gear = 1;
-  car.turnSignal = 0;
-  chase.snap(car);
+  target.drivetrain.gear = 1;
+  target.turnSignal = 0;
+  chase.snap(target);
   world.step();
 }
 
@@ -436,7 +436,8 @@ hud.el.abs.textContent = 'LOCK';
 
 input.on('respawn', () => {
   if (cityMode) {
-    respawnCity(); // back on the nearest road lane (player-triggered)
+    // back on the nearest road lane - for whichever car you hold
+    respawnCity(cityFocus >= 0 && cityField ? cityField[cityFocus].car : car);
     return;
   }
   respawn();
@@ -459,7 +460,8 @@ function cycleCamera() {
 }
 function cycleFocus() {
   if (cityMode) {
-    // -1 = your car, then all the AI traffic cars, then back to you
+    // -1 = your car, then GRAB each AI traffic car in turn (you drive it),
+    // then back to you
     const n = (cityField || opponents).length;
     cityFocus = cityFocus >= n - 1 ? -1 : cityFocus + 1;
     chase.snap(cityFocusCar());
@@ -573,7 +575,7 @@ if (params.has('auto')) {
 if (params.has('cam')) chase.mode = Number(params.get('cam'));
 
 document.getElementById('respawn').addEventListener('click', () => {
-  if (cityMode) respawnCity();
+  if (cityMode) respawnCity(cityFocus >= 0 && cityField ? cityField[cityFocus].car : car);
   else respawn();
 });
 
@@ -760,6 +762,10 @@ function frame(now) {
     sessionTime += dt;
     if (cityMode) cityTime += dt;
 
+    // city: KENDARAAN (X) lets you grab any traffic car - you drive it and
+    // its AI stands down; leaving it parks it where it stopped
+    const driveCar = cityMode && cityFocus >= 0 ? cityField[cityFocus].car : car;
+
     // fixed-step physics with a spiral-of-death guard. In spectator mode the
     // player's car is in `opponents` (the 11th AI), so the single loop below
     // drives every car in the field. In drive and city modes the player's
@@ -768,7 +774,7 @@ function frame(now) {
     accumulator += dt;
     let steps = 0;
     while (accumulator >= FIXED_DT && steps < 8) {
-      if (!spectate) car.update(FIXED_DT, state);
+      if (!spectate) driveCar.update(FIXED_DT, state);
       if ((aiTick & 1) === 0) {
         const field = cityMode ? cityField : opponents;
         if (cityMode) {
@@ -791,6 +797,7 @@ function frame(now) {
           pe.dz = 1 - 2 * (pq.x * pq.x + pq.y * pq.y);
         }
         for (let i = 0; i < field.length; i++) {
+          if (cityMode && i === cityFocus) continue; // you're driving this one
           const o = field[i];
           const aiState = o.driver.update(FIXED_DT * 2);
           o.car.update(FIXED_DT * 2, aiState);
@@ -828,32 +835,36 @@ function frame(now) {
           dist: null,
           dest: '—',
           light: null,
+          carLabel: 'MOBIL KAMU',
         });
         car.turnSignal = st > 0.3 ? 1 : st < -0.3 ? -1 : 0;
       } else {
-        const o = (cityField || opponents)[cityFocus];
+        const o = cityField[cityFocus];
         const d = o.driver;
-        let turn = 'LANJUT';
+        // you're holding this car: indicators + turn text come from YOUR
+        // steering; its route info stays on the HUD until you let it go
+        const st = state.steer;
+        o.car.turnSignal = st > 0.3 ? 1 : st < -0.3 ? -1 : 0;
+        let turn = st > 0.3 ? 'KANAN' : st < -0.3 ? 'KIRI' : 'LANJUT';
         let dist = null;
         let light = null;
         let dest = '—';
         if (d && d.route) {
           dest = d.route.dest ? d.route.dest.name : '—';
-          const man = d.route.maneuvers[d.manIdx];
-          if (man) {
-            const dm = man.s - d.s;
-            if (dm < 55) {
-              turn = man.type === 'L' ? 'KIRI' : man.type === 'R' ? 'KANAN' : 'LANJUT';
-              dist = Math.max(0, Math.round(dm));
-            }
-          }
           const stop = d.route.stops[d.stopIdx];
           if (stop) {
             const ds = stop.s - d.s;
             if (ds < 70) light = cityLights.lightFor(stop.node, stop.axis, cityTime);
           }
         }
-        hud.updateCity({ speedKmh: o.car.telemetry.speedKmh, turn, dist, dest, light });
+        hud.updateCity({
+          speedKmh: o.car.telemetry.speedKmh,
+          turn,
+          dist,
+          dest,
+          light,
+          carLabel: 'MOBIL ' + String(cityFocus + 2).padStart(2, '0'),
+        });
       }
       if (cityRef) cityRef.updateLights(cityLights, cityTime);
     } else {
@@ -904,11 +915,12 @@ function frame(now) {
     if (started && engineAudio.ready) {
       engineAudio.updateListener(dt, camera.position, camera.quaternion);
       if (!spectate) {
-        engineAudio.updateCar(car, true, car.body.translation(), car.body.linvel());
+        engineAudio.updateCar(driveCar, true, driveCar.body.translation(), driveCar.body.linvel());
       }
     {
       const field = cityMode ? cityField : opponents;
       for (let i = 0; i < field.length; i++) {
+        if (cityMode && i === cityFocus) continue; // just updated as the main car
         const o = field[i];
         engineAudio.updateCar(
           o.car,

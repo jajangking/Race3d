@@ -1005,6 +1005,13 @@ body.is-city.is-touch .city-ui {
   letter-spacing: 0.22em;
   color: var(--dim);
 }
+.city-ui__car {
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--amber, #ffb300);
+}
 
 .city-ui__row {
   display: flex;
