@@ -237,8 +237,9 @@ let cityTime = 0;
 let cityFocus = -1; // -1 = the player's car, 0..n = an AI car
 // city population: the 10 race opponents PLUS extra traffic-only cars, so
 // the streets feel busy. The extras exist only in KOTA mode (created in
-// setupCity), so the race scene stays lean. 35 AI cars + you = 36 vehicles.
-const CITY_EXTRA_CARS = 25;
+// setupCity), so the race scene stays lean. 45 AI cars + you = 46 vehicles
+// (up to 2 cars per road segment).
+const CITY_EXTRA_CARS = 35;
 const cityExtras = []; // traffic-only cars { car, mesh, driver }
 let cityField = null;  // every AI car on the road (opponents + extras)
 const CITY_CAM_LABELS = ['CHASE', 'HOKA', 'BUMPER', 'OVERVIEW'];
@@ -249,22 +250,32 @@ function cityFocusCar() {
 }
 
 /**
- * Spread `count` spawn points over different road segments, mid-segment on
- * the correct (right-hand) lane, facing the segment's far node.
+ * Spread `count` spawn points over road segments, mid-segment on the
+ * correct (right-hand) lane, facing the segment's far node. Up to TWO cars
+ * per segment (opposite directions, or same direction in the far half of
+ * the segment) so a busy city fits far more traffic than one car per road.
  * `excludeKey` keeps one segment free (the player's spawn).
  */
 function citySpawnSpots(count, excludeKey = null) {
   const spots = [];
-  const used = new Set();
+  const perKey = new Map(); // key -> [{d, t}]
   let guard = 0;
-  while (spots.length < count && guard++ < 600) {
+  while (spots.length < count && guard++ < 3000) {
     const horiz = Math.random() < 0.5;
     const line = Math.floor(Math.random() * CITY.n);
     const gap = Math.floor(Math.random() * (CITY.n - 1));
     const key = (horiz ? 'h' : 'v') + line + '-' + gap;
-    if (used.has(key) || key === excludeKey) continue;
-    used.add(key);
+    if (key === excludeKey) continue;
+    const existing = perKey.get(key) ?? [];
+    if (existing.length >= 2) continue;
     const d = Math.random() < 0.5 ? 1 : -1;
+    // sharing a segment in the SAME direction? take the far half so the
+    // two cars start 7+ m apart in one lane
+    const first = existing.find((e) => e.d === d);
+    const t = first ? (first.t <= 0.5 ? 0.6 + Math.random() * 0.2 : 0.3 + Math.random() * 0.2)
+                    : 0.3 + Math.random() * 0.2;
+    existing.push({ d, t });
+    perKey.set(key, existing);
     const a0 = d > 0 ? gap : gap + 1;
     const a1 = d > 0 ? gap + 1 : gap;
     const nextNode = horiz ? nodeIndex(a1, line) : nodeIndex(line, a1);
@@ -273,7 +284,7 @@ function citySpawnSpots(count, excludeKey = null) {
     // a horizontal road (running along X) lives at z = linePos; a vertical
     // one (running along Z) lives at x = linePos
     const linePos = (line - (CITY.n - 1) / 2) * CITY.pitch;
-    const segPos = c0 + (c1 - c0) * (0.3 + Math.random() * 0.4);
+    const segPos = c0 + (c1 - c0) * t;
     const x = horiz ? segPos : linePos;
     const z = horiz ? linePos : segPos;
     const fx = horiz ? d : 0;
@@ -463,7 +474,12 @@ function cycleFocus() {
     // -1 = your car, then GRAB each AI traffic car in turn (you drive it),
     // then back to you
     const n = (cityField || opponents).length;
+    const prev = cityFocus;
     cityFocus = cityFocus >= n - 1 ? -1 : cityFocus + 1;
+    // the car you let go re-anchors its AI to where you left it: fresh
+    // route from the real pose, no stale light/stop state (the car itself
+    // is not moved - no teleport)
+    if (prev >= 0 && cityField[prev]) cityField[prev].driver.reanchor();
     chase.snap(cityFocusCar());
     return;
   }

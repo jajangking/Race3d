@@ -54,6 +54,8 @@ export class CityDriver {
     this.stuckT = 0;
     this.reverseT = 0;
     this.replans = 0;
+    this.yieldHoldT = 0; // time spent standing still in a left-turn yield
+    this.yieldWaived = false; // yield timed out: cross the stopped car
 
     // spawn pose comes from the caller via reset()
     this.route = null;
@@ -250,8 +252,21 @@ export class CityDriver {
     let stuckLimit = null; // per-frame jam-threshold override (oncoming jam)
 
     const stop = r.stops[this.stopIdx];
+    // IN-JUNCTION CLEARING: once a car has crossed the stop line it owns
+    // the box until it leaves (~12 m: line is 8.5 m before the node centre,
+    // the far side ~3.5 m past it). Cars waiting on OTHER waiting cars
+    // inside a node is how whole intersections deadlocked: everyone
+    // matches the stopped car ahead to zero, everyone's reverse is blocked
+    // by the queue behind. Inside the box a leader ahead is followed at a
+    // cautious roll, never matched to a stop.
+    let inJunction = false;
     if (stop) {
       const dStop = stop.s - this.s;
+      const prev = r.stops[(this.stopIdx - 1 + r.stops.length) % r.stops.length];
+      if (prev) {
+        const passed = this.s - prev.s;
+        inJunction = passed > 0.5 && passed < 12;
+      }
       // only while approaching the line: once it is behind us the car must
       // roll through the intersection (a permanent zero here deadlocks any
       // car that crosses the line by even a few cm)
@@ -285,11 +300,21 @@ export class CityDriver {
         if (Math.abs(this.crossTrack) > 1.0) {
           oncomingIntruder = true;
           stuckLimit = 6;
+        } else if (inJunction) {
+          // head-on INSIDE the box: no priority rules apply, both cars
+          // owe the junction to each other - creep like an intruder and
+          // let the cross-track correction open a way
+          oncomingIntruder = true;
+          stuckLimit = 6;
         } else {
           // in-lane car keeps priority and passes at a cautious 3 m/s
           vTarget = Math.min(vTarget, 3.0);
           stuckLimit = 6;
         }
+      } else if (inJunction) {
+        // clearing the box: roll through at a cautious 4 m/s instead of
+        // matching a stopped car to zero (see inJunction note above)
+        vTarget = Math.min(vTarget, 4.0);
       } else {
         let vFollow = (gap - 2.3) * 0.85;
         if (closing > 2.5) vFollow = Math.min(vFollow, Math.max(0, (gap - 3) * 0.5));
@@ -302,8 +327,14 @@ export class CityDriver {
       this._lastGap = gap;
     }
     // emergency: something right in front of the nose (the intruder is
-    // exempt - see below, it must keep creeping to re-centre)
-    if (sense.frontCenter < 3.0 && !oncomingIntruder) vTarget = 0;
+    // exempt - see below, it must keep creeping to re-centre; inside the
+    // box only true contact stops the car - it must clear the junction)
+    if (
+      sense.frontCenter < 3.0 &&
+      !oncomingIntruder &&
+      !(inJunction && sense.frontCenter >= 1.5)
+    )
+      vTarget = 0;
     // intruder: CREEP while steering back into its own lane. Steering at
     // zero speed does nothing, and reversing mid-road rams into traffic
     // behind - a slow creep lets the cross-track correction re-centre the
@@ -319,21 +350,43 @@ export class CityDriver {
     // stop line sits 8.5 m before the node centre) it finishes the turn -
     // stopping mid-intersection for oncoming traffic boxes the junction.
     const man = r.maneuvers[this.manIdx];
-    if (man && man.type === 'L') {
-      const dMan = man.s - this.s;
-      if (dMan < 34 && dMan > 8) {
-        const si = Math.max(0, Math.round((man.s - 8) / 0.5));
-        const fIn = {
-          dx: Math.abs(r.tx[si]) >= Math.abs(r.tz[si]) ? Math.sign(r.tx[si]) || 1 : 0,
-          dz: Math.abs(r.tz[si]) >= Math.abs(r.tx[si]) ? Math.sign(r.tz[si]) || 1 : 0,
-        };
-        const oncoming = this._oncomingNear(man.node, fIn);
-        if (oncoming.near) {
+    if (man && man.type === 'L' && man.s - this.s < 34 && man.s - this.s > 8) {
+      const si = Math.max(0, Math.round((man.s - 8) / 0.5));
+      const fIn = {
+        dx: Math.abs(r.tx[si]) >= Math.abs(r.tz[si]) ? Math.sign(r.tx[si]) || 1 : 0,
+        dz: Math.abs(r.tz[si]) >= Math.abs(r.tx[si]) ? Math.sign(r.tz[si]) || 1 : 0,
+      };
+      const oncoming = this._oncomingNear(man.node, fIn);
+      if (oncoming.near) {
+        if (this.yieldWaived) {
+          // the yield already timed out on this approach: cross past the
+          // stopped car at a cautious pace (it is stopped - a moving car
+          // would have passed within 6 s). The cross takes ~5 s - give the
+          // stuck detector room so it doesn't trigger a reverse mid-box.
+          vTarget = Math.min(vTarget, 3.5);
+          stuckLimit = 12;
+        } else {
           vTarget = Math.min(vTarget, oncoming.dist < 11 ? 0 : 3.5);
           hold = true;
           yieldHold = true;
+          if (speed < 0.5) this.yieldHoldT += dt;
+          else this.yieldHoldT = 0;
+          // a left-turn yield that never resolves (oncoming car parked, or
+          // itself stuck) must not hold us forever: after 6 s of pure
+          // standstill, waive the yield for this approach and cross -
+          // reversing out of an intersection is no option (traffic behind,
+          // and a standstill car cannot un-jam into a full road).
+          if (this.yieldHoldT > 6) this.yieldWaived = true;
         }
+      } else {
+        // the oncoming threat is gone: the waiver resets with it
+        this.yieldWaived = false;
+        this.yieldHoldT = 0;
       }
+    } else {
+      // before / past the left-turn yield window: fresh state
+      this.yieldWaived = false;
+      this.yieldHoldT = 0;
     }
 
     // lost-driver recovery: far from the route for a sustained moment means
@@ -498,9 +551,13 @@ export class CityDriver {
       const dz = c.z - p.z;
       const along = dx * fx + dz * fz;
       if (along < 0.5 || along > gap + 3.5) continue;
-      // ray cone (±10 deg) plus box-width margin
+      // cone must match what the front-center raycast can SEE, plus a
+      // body-width margin - if the ray sees a car, the geometry must too,
+      // or a facing car just outside the old narrow cone became a "phantom
+      // leader": the car emergency-stopped behind it and its reverse was
+      // blocked by traffic, deadlocking the middle of the road.
       const lat = Math.abs(dx * fz - dz * fx);
-      if (lat > 0.4 * along + 0.8) continue;
+      if (lat > 0.45 * along + 1.3) continue;
       const dot = c.dx * fx + c.dz * fz;
       if (dot < -0.2) return 'oncoming';
       return 'leader';
@@ -558,7 +615,13 @@ export class CityDriver {
       const lat = ax * rx + az * rz; // oncoming lane sits at lat ≈ -1.5
       if (lat > -0.1 || lat < -2.9) continue;
       const headingToward = -(c.dx * fIn.dx + c.dz * fIn.dz);
-      if (headingToward > 0.6 && along < best) best = along;
+      if (headingToward <= 0.6) continue;
+      // A PARKED oncoming car is not a threat unless it is close enough to
+      // actually block the intersection: yielding to a stationary car 15 m
+      // away deadlocks the left turn forever (it never arrives). Count
+      // moving cars (they will arrive) and stationary cars only up close.
+      const sp = c.car && c.car.telemetry ? c.car.telemetry.speed : 0;
+      if ((along < 11 || sp > 0.8) && along < best) best = along;
     }
     return { near: best < 20, dist: best };
   }
@@ -572,6 +635,69 @@ export class CityDriver {
    * cars that were outside the grid (no node in front -> route back ->
    * slow U-turn -> off path -> replan -> ...).
    */
+  /**
+   * Re-anchor this driver to the car's CURRENT pose. Used when the player
+   * releases a grabbed car: the car may have been driven anywhere, so the
+   * old route / arc-length / stop state is stale and can produce phantom
+   * holds (waiting for a "red light" the car is no longer near). Build a
+   * fresh route from where the car actually is, facing where it faces.
+   * The car itself is NOT moved - navigation state only.
+   */
+  reanchor() {
+    const p = this.car.body.translation();
+    const q = this.car.body.rotation();
+    _fwd.set(0, 0, 1).applyQuaternion(_quat.set(q.x, q.y, q.z, q.w));
+    _fwd.y = 0;
+    const fl = Math.hypot(_fwd.x, _fwd.z);
+    const fx = _fwd.x / Math.max(fl, 1e-6);
+    const fz = _fwd.z / Math.max(fl, 1e-6);
+
+    const off = (CITY.n - 1) / 2;
+    const road = nearestRoadPoint(p.x, p.z);
+    let nextNode, prevNode;
+    if (road && road.dev < 30) {
+      let a, b;
+      if (road.dx !== 0) {
+        const j = Math.min(CITY.n - 1, Math.max(0, Math.round(road.z / CITY.pitch + off)));
+        const i = Math.min(CITY.n - 2, Math.max(0, Math.floor(road.x / CITY.pitch + off)));
+        a = nodeIndex(i, j);
+        b = nodeIndex(i + 1, j);
+      } else {
+        const i = Math.min(CITY.n - 1, Math.max(0, Math.round(road.x / CITY.pitch + off)));
+        const j = Math.min(CITY.n - 2, Math.max(0, Math.floor(road.z / CITY.pitch + off)));
+        a = nodeIndex(i, j);
+        b = nodeIndex(i, j + 1);
+      }
+      const along = fx * road.dx + fz * road.dz;
+      if (along > 0.5) { nextNode = b; prevNode = a; }
+      else if (along < -0.5) { nextNode = a; prevNode = b; }
+      else {
+        const pa = nodePos(a);
+        const pb = nodePos(b);
+        const da = (pa.x - p.x) ** 2 + (pa.z - p.z) ** 2;
+        const db = (pb.x - p.x) ** 2 + (pb.z - p.z) ** 2;
+        if (da <= db) { nextNode = a; prevNode = b; }
+        else { nextNode = b; prevNode = a; }
+      }
+    } else {
+      let bd = Infinity;
+      nextNode = 0;
+      for (let id = 0; id < CITY.n * CITY.n; id++) {
+        const np = nodePos(id);
+        const dd = (np.x - p.x) ** 2 + (np.z - p.z) ** 2;
+        if (dd < bd) { bd = dd; nextNode = id; }
+      }
+      prevNode = this._nearestNodeBehind(p.x, p.z, nextNode);
+    }
+    // clear any in-flight recovery / hold state from the stale route
+    this.stuckT = 0;
+    this.reverseT = 0;
+    this.yieldHoldT = 0;
+    this.yieldWaived = false;
+    this.offPathT = 0;
+    this._place(p.x, p.z, dirBetween(prevNode, nextNode), nextNode, prevNode);
+  }
+
   _replanFromScratch() {
     const p = this.car.body.translation();
     const q = this.car.body.rotation();
