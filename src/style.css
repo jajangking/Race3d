@@ -956,6 +956,13 @@ body.is-city .city-ui {
   display: flex;
 }
 
+/* on phones the card lifts above the steering slider + pedal bar, so the
+   pedals stay reachable while the nav info stays visible (city mode is
+   driven, not watched) */
+body.is-city.is-touch .city-ui {
+  bottom: calc(206px + env(safe-area-inset-bottom));
+}
+
 .city-ui__card {
   width: 100%;
   background: var(--panel);

@@ -13,7 +13,7 @@
  *   (x+8, z-8) faces -Z : southbound approach (Z axis)
  */
 import * as THREE from 'three';
-import { CITY, nodePos } from './cityLayout.js';
+import { CITY, nodePos, cityBuildings } from './cityLayout.js';
 
 const PITCH = CITY.pitch;
 const ROAD_HALF = CITY.roadHalf;
@@ -250,43 +250,23 @@ export function createCity(scene) {
   group.add(crosses, stopsBar);
 
   // --------------------------------------------------------------- buildings
+  // footprints come from cityLayout.cityBuildings() so the physics
+  // colliders in main.js hit exactly the boxes that are drawn here
   const BUILD_N = 64;
   const builds = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), buildMat, BUILD_N);
   {
     const m = new THREE.Matrix4();
     const c = new THREE.Color();
-    // deterministic-ish variety
-    let seed = 7;
-    const rnd = () => {
-      seed = (seed * 16807) % 2147483647;
-      return seed / 2147483647;
-    };
     const palette = [0x4a4f58, 0x5a6069, 0x6a7078, 0x77706a, 0x59626e, 0x8a8578, 0x46525e, 0x9a9484];
     let k = 0;
-    for (let j = 0; j < N - 1; j++) {
-      for (let i = 0; i < N - 1; i++) {
-        const bx = (i - (N - 1) / 2) * PITCH;
-        const bz = (j - (N - 1) / 2) * PITCH;
-        for (let sxx = 0; sxx < 2; sxx++) {
-          for (let szz = 0; szz < 2; szz++) {
-            const lotCx = bx + 6 + 15 + sxx * 30;
-            const lotCz = bz + 6 + 15 + szz * 30;
-            if (rnd() < 0.18) continue; // open lot / plaza
-            const w = 10 + rnd() * 10;
-            const d = 10 + rnd() * 10;
-            const h = 8 + rnd() * 37;
-            const ox = lotCx + (rnd() - 0.5) * (30 - w - 4);
-            const oz = lotCz + (rnd() - 0.5) * (30 - d - 4);
-            m.makeScale(w, h, d);
-            m.setPosition(ox, h / 2 + 0.02, oz);
-            builds.setMatrixAt(k, m);
-            c.setHex(palette[Math.floor(rnd() * palette.length)]);
-            c.multiplyScalar(0.85 + rnd() * 0.3);
-            builds.setColorAt(k, c);
-            k++;
-          }
-        }
-      }
+    for (const b of cityBuildings()) {
+      m.makeScale(b.w, b.h, b.d);
+      m.setPosition(b.x, b.h / 2 + 0.02, b.z);
+      builds.setMatrixAt(k, m);
+      c.setHex(palette[b.color]);
+      c.multiplyScalar(b.shade);
+      builds.setColorAt(k, c);
+      k++;
     }
     builds.count = k;
     if (builds.instanceColor) builds.instanceColor.needsUpdate = true;

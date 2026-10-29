@@ -519,3 +519,47 @@ function entryDistFor(tt) {
   if (tt === 'S' || tt === 'U') return CITY.edgeStop;
   return tt === 'R' ? CITY.turnR + CITY.lane : CITY.turnR - CITY.lane;
 }
+
+/**
+ * Building footprints of the 4x4 blocks, in the exact deterministic order
+ * the renderer has always used. Shared between the renderer (visual),
+ * the game (Rapier colliders) and anything else that needs to know where
+ * the city is solid.
+ */
+export function cityBuildings() {
+  const n = CITY.n;
+  const out = [];
+  let seed = 7;
+  const rnd = () => {
+    seed = (seed * 16807) % 2147483647;
+    return seed / 2147483647;
+  };
+  for (let j = 0; j < n - 1; j++) {
+    for (let i = 0; i < n - 1; i++) {
+      const bx = (i - (n - 1) / 2) * CITY.pitch;
+      const bz = (j - (n - 1) / 2) * CITY.pitch;
+      for (let sxx = 0; sxx < 2; sxx++) {
+        for (let szz = 0; szz < 2; szz++) {
+          const lotCx = bx + 6 + 15 + sxx * 30;
+          const lotCz = bz + 6 + 15 + szz * 30;
+          if (rnd() < 0.18) continue; // open lot / plaza
+          const w = 10 + rnd() * 10;
+          const d = 10 + rnd() * 10;
+          const h = 8 + rnd() * 37;
+          const ox = lotCx + (rnd() - 0.5) * (30 - w - 4);
+          const oz = lotCz + (rnd() - 0.5) * (30 - d - 4);
+          out.push({
+            x: ox,
+            z: oz,
+            w,
+            d,
+            h,
+            color: Math.floor(rnd() * 8),
+            shade: 0.85 + rnd() * 0.3,
+          });
+        }
+      }
+    }
+  }
+  return out;
+}

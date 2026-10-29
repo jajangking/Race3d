@@ -382,7 +382,13 @@ export class CityDriver {
     if (this.reverseT > 0) {
       this.reverseT -= dt;
       reverse = true;
-      throttle = 0;
+      // Throttle the reverse ONLY when the road behind is clear: from a
+      // standstill a coast-reverse produces no wheel torque (the drivetrain
+      // cuts it at idle), so a car wedged against a building corner can
+      // never actually move without it. But with traffic queued behind, a
+      // throttled reverse would rear-end the car at our bumper - then fall
+      // back to the gentle coast.
+      throttle = this._carBehind() ? 0 : 0.35;
       brake = 0;
       handbrake = false;
       // a straight reverse grinds deeper into a side-jam (a wedge against
@@ -500,6 +506,33 @@ export class CityDriver {
       return 'leader';
     }
     return null;
+  }
+
+  /**
+   * Is there a fleet car in our lane BEHIND us (0.5-7 m)? Decides whether
+   * the stuck-reverse may use throttle (clear) or must stay a coast
+   * (traffic at our bumper - a coast cannot rear-end it).
+   */
+  _carBehind() {
+    const cars = this._fleet ? this._fleet() : null;
+    if (!cars) return false;
+    const p = this.car.body.translation();
+    const q = this.car.body.rotation();
+    _fwd.set(0, 0, 1).applyQuaternion(_quat.set(q.x, q.y, q.z, q.w));
+    _fwd.y = 0;
+    const fl = Math.hypot(_fwd.x, _fwd.z);
+    const fx = _fwd.x / Math.max(fl, 1e-6);
+    const fz = _fwd.z / Math.max(fl, 1e-6);
+    for (const c of cars) {
+      if (!c || c.car === this.car) continue;
+      const dx = c.x - p.x;
+      const dz = c.z - p.z;
+      const back = -(dx * fx + dz * fz); // > 0 = behind us
+      if (back < 0.5 || back > 7) continue;
+      const lat = Math.abs(dx * fz - dz * fx);
+      if (lat < 1.8) return true;
+    }
+    return false;
   }
 
   /**
