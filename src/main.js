@@ -14,6 +14,7 @@ import { SpectatorCamera } from './render/spectatorCamera.js';
 import { Input } from './input.js';
 import { Hud } from './hud.js';
 import { AIDriver } from './ai/aiDriver.js';
+import { EngineAudio } from './audio/engineAudio.js';
 
 // ------------------------------------------------------------------ physics
 const FIXED_DT = 1 / 120;
@@ -222,6 +223,13 @@ const race = { laps: [], prevU: [], progress: [] };
 // --------------------------------------------------------------------- input
 const input = new Input();
 const hud = new Hud();
+// Engine audio for the whole field (started on the start-button gesture).
+const engineAudio = new EngineAudio();
+// audio must start from a user gesture; keep the resume call available later
+document.addEventListener('pointerdown', () => engineAudio.resume(), { passive: true });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) engineAudio.resume();
+});
 hud.setAssist('tc', car.assists.tc);
 hud.setAssist('esc', car.assists.esc);
 hud.el.abs.textContent = 'LOCK';
@@ -275,6 +283,8 @@ function begin(mode = 'drive') {
   if (started) return;
   started = true;
   spectate = mode === 'spectate';
+  // this call comes from a click/touch - the moment the browser lets audio in
+  engineAudio.start();
   if (intro) intro.classList.add('is-hidden');
   hud.show();
   document.body.classList.add('is-playing');
@@ -582,6 +592,27 @@ function frame(now) {
 
   // fell off the world somehow? put it back on the circuit
   if (p.y < -8) respawn();
+
+  // ------------------------------------------------------------- audio
+  // The listener sits at the camera (chase or broadcast) so engine sounds
+  // arrive from the right direction with a real doppler shift; every car in
+  // the field feeds its own chain each frame. In spectate mode the player's
+  // car is just the 11th opponent, so it is covered by the loop below.
+  if (started && engineAudio.ready) {
+    engineAudio.updateListener(dt, camera.position, camera.quaternion);
+    if (!spectate) {
+      engineAudio.updateCar(car, true, car.body.translation(), car.body.linvel());
+    }
+    for (let i = 0; i < opponents.length; i++) {
+      const o = opponents[i];
+      engineAudio.updateCar(
+        o.car,
+        spectate && !!o.isPlayer,
+        o.car.body.translation(),
+        o.car.body.linvel(),
+      );
+    }
+  }
 
   renderer.render(scene, camera);
 }

@@ -165,22 +165,6 @@ function rubberTexture() {
   return tex;
 }
 
-/** Alternating red/white bands along the V axis (kerbs run along the road). */
-function kerbTexture() {
-  const c = document.createElement('canvas');
-  c.width = 64;
-  c.height = 64;
-  const g = c.getContext('2d');
-  g.fillStyle = '#e9e9e9';
-  g.fillRect(0, 0, 64, 64);
-  g.fillStyle = '#c81c1c';
-  g.fillRect(0, 0, 64, 32);
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
 /** Dashed centre line: white bar with a transparent gap. */
 function dashTexture() {
   const c = document.createElement('canvas');
@@ -394,115 +378,6 @@ export function createTrack(scene) {
     group.add(dash);
   }
 
-  // kerbs: full-width red/white at every corner (both road edges). The mask
-  // uses hysteresis - kerbs start when the radius drops below ~55 m and only
-  // end once it has stayed above ~70 m for a short stretch - so each corner
-  // gets one continuous band per side instead of fragmented specks toggling
-  // on/off as the radius wobbles around a threshold.
-  {
-    const kerbTex = kerbTexture();
-    // The kerb is now a real 3D raised object (top + side faces), so it writes
-    // depth and occludes correctly; double-sided so face winding can never
-    // make a strip vanish. Its 6 cm height clears the asphalt's depth test at
-    // any distance the kerb is actually seen from.
-    const kerbMat = new THREE.MeshStandardMaterial({
-      map: kerbTex,
-      roughness: 0.75,
-      side: THREE.DoubleSide,
-    });
-    const N = line.n;
-    const kerbGeo = new THREE.BufferGeometry();
-    const pos = [];
-    const uv = [];
-    const nor = [];
-    const idx = [];
-    const p = new THREE.Vector3();
-    const t = new THREE.Vector3();
-    const side = new THREE.Vector3();
-    let dist = 0;
-    let prev = null;
-    const K = ROAD_HALF_WIDTH + 0.5; // inner edge just inside the white line
-    const KERB_IN_K = 1 / 55; // enter a kerb zone when radius < 55 m
-    const KERB_OUT_K = 1 / 70; // leave only once radius > 70 m...
-    const KERB_HOLD = 5; // ...for this many samples (~15 m)
-    const kerbMask = new Array(N).fill(false);
-    {
-      let inKerb = false;
-      let exitStreak = 0;
-      // Two revolutions so the state wraps consistently across u = 0.
-      for (let pass = 0; pass < 2; pass++) {
-        for (let i = 0; i < N; i++) {
-          const k = line.curvature[i];
-          if (k > KERB_IN_K) {
-            inKerb = true;
-            exitStreak = 0;
-          } else if (k < KERB_OUT_K) {
-            exitStreak++;
-            if (exitStreak > KERB_HOLD) inKerb = false;
-          } else {
-            exitStreak = 0;
-          }
-          if (pass === 1) kerbMask[i] = inKerb;
-        }
-      }
-    }
-    // Real 3D raised curb: a top face plus an inner (road-facing) and outer
-    // (run-off-facing) side face, so from chase/bumper angles it reads as a
-    // physical kerb with height instead of a flat sticker floating above the
-    // asphalt. Top sits 6 cm above the road, sides meet the tarmac at 2 cm.
-    const KT = 0.08; // kerb top height
-    const KB = 0.02; // kerb bottom (asphalt level)
-    for (let i = 0; i <= N; i++) {
-      const u = i / N;
-      curve.getPointAt(u, p);
-      curve.getTangentAt(u, t);
-      side.set(t.z, 0, -t.x).normalize();
-      if (prev) dist += p.distanceTo(prev);
-      prev = prev ? prev.copy(p) : p.clone();
-      const sides = kerbMask[i % N] ? [1, -1] : [];
-      if (sides.length === 0) continue;
-      const v = dist / 2.4;
-      for (const sgn of sides) {
-        const ox = side.x * sgn; // outward horizontal normal
-        const oz = side.z * sgn;
-        const inX = p.x + side.x * sgn * (K - 0.75);
-        const inZ = p.z + side.z * sgn * (K - 0.75);
-        const outX = p.x + side.x * sgn * (K + 0.75);
-        const outZ = p.z + side.z * sgn * (K + 0.75);
-        const a = pos.length / 3;
-        // top face (inner, outer)
-        pos.push(inX, KT, inZ, outX, KT, outZ);
-        nor.push(0, 1, 0, 0, 1, 0);
-        uv.push(0, v, 1, v);
-        // inner side face (road-facing)
-        pos.push(inX, KT, inZ, inX, KB, inZ);
-        nor.push(-ox, 0, -oz, -ox, 0, -oz);
-        uv.push(0, v, 1, v);
-        // outer side face (run-off-facing)
-        pos.push(outX, KT, outZ, outX, KB, outZ);
-        nor.push(ox, 0, oz, ox, 0, oz);
-        uv.push(0, v, 1, v);
-        if (i < N) {
-          const b = a + 6; // next sample starts here (6 verts per sample)
-          idx.push(a, b, a + 1, a + 1, b, b + 1);     // top
-          idx.push(a + 2, b + 2, a + 3, a + 3, b + 2, b + 3); // inner side
-          idx.push(a + 4, b + 4, a + 5, a + 5, b + 4, b + 5); // outer side
-        }
-      }
-    }
-    kerbGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    kerbGeo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-    kerbGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    kerbGeo.setIndex(idx);
-    // 6 cm above the asphalt: reads as a real raised curb from chase/bumper
-    // angles, and the decal depth handling keeps it from fighting the road.
-    if (pos.length > 0) {
-      const kerb = new THREE.Mesh(kerbGeo, kerbMat);
-      kerb.renderOrder = 4;
-      group.add(kerb);
-    }
-  }
-
   // ------------------------------------------------------- start/finish line
   const start = curve.getPointAt(0);
   const startTan = curve.getTangentAt(0);
@@ -618,7 +493,7 @@ export function createTrack(scene) {
   }
 
   // ---------------------------------------------------------------- scenery
-  // Cones along the outside of the kerbs, instanced.
+  // Cones along the outside of the road edge, instanced.
   {
     const coneGeo = new THREE.ConeGeometry(0.22, 0.52, 8);
     const coneMat = new THREE.MeshStandardMaterial({ color: 0xff5a1f, roughness: 0.65 });

@@ -46,8 +46,8 @@ export class ChaseCamera {
 
   /**
    * Portrait phones have a very narrow horizontal FOV at a fixed 58°
-   * vertical (aspect 0.5 -> ~31° horizontal), so the kerbs and road edges
-   * at +/-8 m fall outside the frame entirely. Keep the horizontal coverage
+   * vertical (aspect 0.5 -> ~31° horizontal), so the road edges at
+   * +/-8 m fall outside the frame entirely. Keep the horizontal coverage
    * roughly constant by widening the vertical FOV in portrait.
    */
   baseFov(aspect) {
