@@ -235,11 +235,17 @@ let cityLights = null;
 let cityFleet = null;
 let cityTime = 0;
 let cityFocus = -1; // -1 = the player's car, 0..n = an AI car
+// city population: the 10 race opponents PLUS extra traffic-only cars, so
+// the streets feel busy. The extras exist only in KOTA mode (created in
+// setupCity), so the race scene stays lean.
+const CITY_EXTRA_CARS = 15;
+const cityExtras = []; // traffic-only cars { car, mesh, driver }
+let cityField = null;  // every AI car on the road (opponents + extras)
 const CITY_CAM_LABELS = ['CHASE', 'HOKA', 'BUMPER', 'OVERVIEW'];
 
 /** The car the city camera / HUD currently focus on. */
 function cityFocusCar() {
-  return cityFocus < 0 ? car : opponents[cityFocus].car;
+  return cityFocus < 0 ? car : (cityField || opponents)[cityFocus].car;
 }
 
 /**
@@ -319,11 +325,26 @@ function setupCity() {
   car.drivetrain.gear = 1;
   car.turnSignal = 0;
 
-  // re-home the 10 AI cars onto random city segments with fresh drivers
-  const spots = citySpawnSpots(opponents.length, 'h2-1');
-  for (let i = 0; i < opponents.length; i++) {
-    const o = opponents[i];
+  // re-home every AI car onto a random city segment with a fresh driver:
+  // the 10 race opponents plus the extra traffic-only cars that make the
+  // city feel busy (the extras only exist in KOTA mode).
+  const totalAI = opponents.length + CITY_EXTRA_CARS;
+  const spots = citySpawnSpots(totalAI, 'h2-1');
+  for (let i = 0; i < totalAI; i++) {
     const s = spots[i];
+    let o;
+    if (i < opponents.length) {
+      o = opponents[i];
+    } else {
+      // traffic-only car: fresh Vehicle + simple mesh + CityDriver
+      const paint = OPPONENT_COLORS[(i - opponents.length) % OPPONENT_COLORS.length];
+      const paintDark = new THREE.Color(paint).multiplyScalar(0.62).getHex();
+      const carX = new Vehicle({ RAPIER, world, position: s.pos, quaternion: s.q });
+      const mesh = createCarMesh({ ...CAR, paint, paintDark, simple: true, number: String(i + 2) });
+      scene.add(mesh.root);
+      o = { car: carX, mesh, driver: null, laneOffset: 0 };
+      cityExtras.push(o);
+    }
     o.car.reset(s.pos, s.q);
     o.car.drivetrain.gear = 1;
     o.car.drivetrain.shiftTimer = 0;
@@ -331,16 +352,17 @@ function setupCity() {
     o.driver = new CityDriver(o.car, world, cityLights, () => cityTime);
     o.driver.reset(s.pos.x, s.pos.z, s.yaw, s.nextNode);
   }
+  cityField = [...opponents, ...cityExtras];
   // shared fleet snapshot: the city drivers reason about OTHER cars' real
   // positions/heading (semantic traffic model), e.g. the left-turn yield.
   // The player's car is traffic too, so the AI brakes / yields to it.
   cityFleet = {
     list: [
-      ...opponents.map((o) => ({ x: 0, z: 0, dx: 0, dz: 1, car: o.car })),
+      ...cityField.map((o) => ({ x: 0, z: 0, dx: 0, dz: 1, car: o.car })),
       { x: playerX, z: playerZ, dx: 1, dz: 0, car },
     ],
   };
-  for (const o of opponents) o.driver.setFleet(() => cityFleet.list);
+  for (const o of cityField) o.driver.setFleet(() => cityFleet.list);
   world.step();
 
   document.body.classList.add('is-city');
@@ -437,8 +459,9 @@ function cycleCamera() {
 }
 function cycleFocus() {
   if (cityMode) {
-    // -1 = your car, then the 10 AI cars, then back to you
-    cityFocus = cityFocus >= opponents.length - 1 ? -1 : cityFocus + 1;
+    // -1 = your car, then all the AI traffic cars, then back to you
+    const n = (cityField || opponents).length;
+    cityFocus = cityFocus >= n - 1 ? -1 : cityFocus + 1;
     chase.snap(cityFocusCar());
     return;
   }
@@ -747,9 +770,10 @@ function frame(now) {
     while (accumulator >= FIXED_DT && steps < 8) {
       if (!spectate) car.update(FIXED_DT, state);
       if ((aiTick & 1) === 0) {
+        const field = cityMode ? cityField : opponents;
         if (cityMode) {
-          for (let i = 0; i < opponents.length; i++) {
-            const o = opponents[i];
+          for (let i = 0; i < field.length; i++) {
+            const o = field[i];
             const t = o.car.body.translation();
             const q = o.car.body.rotation();
             cityFleet.list[i].x = t.x;
@@ -760,14 +784,14 @@ function frame(now) {
           // the player's car is traffic to the AI drivers
           const pt = car.body.translation();
           const pq = car.body.rotation();
-          const pe = cityFleet.list[opponents.length];
+          const pe = cityFleet.list[field.length];
           pe.x = pt.x;
           pe.z = pt.z;
           pe.dx = 2 * (pq.x * pq.z + pq.y * pq.w);
           pe.dz = 1 - 2 * (pq.x * pq.x + pq.y * pq.y);
         }
-        for (let i = 0; i < opponents.length; i++) {
-          const o = opponents[i];
+        for (let i = 0; i < field.length; i++) {
+          const o = field[i];
           const aiState = o.driver.update(FIXED_DT * 2);
           o.car.update(FIXED_DT * 2, aiState);
         }
@@ -807,7 +831,7 @@ function frame(now) {
         });
         car.turnSignal = st > 0.3 ? 1 : st < -0.3 ? -1 : 0;
       } else {
-        const o = opponents[cityFocus];
+        const o = (cityField || opponents)[cityFocus];
         const d = o.driver;
         let turn = 'LANJUT';
         let dist = null;
@@ -842,13 +866,16 @@ function frame(now) {
   carMesh.root.position.set(pVis.x, pVis.y, pVis.z);
   carMesh.root.quaternion.set(qVis.x, qVis.y, qVis.z, qVis.w);
 
-  for (let i = 0; i < opponents.length; i++) {
-    const o = opponents[i];
-    const op = o.car.body.translation();
-    const oq = o.car.body.rotation();
-    o.mesh.root.position.set(op.x, op.y, op.z);
-    o.mesh.root.quaternion.set(oq.x, oq.y, oq.z, oq.w);
-    o.mesh.update(o.car);
+  {
+    const field = cityMode ? cityField : opponents;
+    for (let i = 0; i < field.length; i++) {
+      const o = field[i];
+      const op = o.car.body.translation();
+      const oq = o.car.body.rotation();
+      o.mesh.root.position.set(op.x, op.y, op.z);
+      o.mesh.root.quaternion.set(oq.x, oq.y, oq.z, oq.w);
+      o.mesh.update(o.car);
+    }
   }
 
   carMesh.update(car);
@@ -879,14 +906,17 @@ function frame(now) {
       if (!spectate) {
         engineAudio.updateCar(car, true, car.body.translation(), car.body.linvel());
       }
-    for (let i = 0; i < opponents.length; i++) {
-      const o = opponents[i];
-      engineAudio.updateCar(
-        o.car,
-        spectate && !!o.isPlayer,
-        o.car.body.translation(),
-        o.car.body.linvel(),
-      );
+    {
+      const field = cityMode ? cityField : opponents;
+      for (let i = 0; i < field.length; i++) {
+        const o = field[i];
+        engineAudio.updateCar(
+          o.car,
+          spectate && !!o.isPlayer,
+          o.car.body.translation(),
+          o.car.body.linvel(),
+        );
+      }
     }
   }
 
