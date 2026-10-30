@@ -19,6 +19,27 @@ import { createCity } from './city/cityRender.js';
 import { CITY, createCityLights, nodeIndex, cityBuildings, nearestRoadPoint } from './city/cityLayout.js';
 import { CityDriver } from './city/cityDriver.js';
 
+// ------------------------------------------------------------------ errors
+// Phones have no handy console: surface JS errors on-screen (bottom-left)
+// so a stuck screen can be reported with the actual exception next to it.
+const _errBox = document.createElement('div');
+_errBox.id = 'js-error-overlay';
+_errBox.style.cssText =
+  'position:fixed;left:8px;bottom:8px;max-width:72vw;max-height:26vh;overflow:auto;' +
+  'z-index:9999;background:#7f1d1dee;color:#fecaca;font:11px/1.45 monospace;' +
+  'padding:6px 9px;border-radius:6px;white-space:pre-wrap;display:none;pointer-events:none;';
+document.body.appendChild(_errBox);
+function showJsError(msg) {
+  _errBox.textContent = '⚠ ' + String(msg).slice(0, 500);
+  _errBox.style.display = 'block';
+}
+window.addEventListener('error', (e) =>
+  showJsError(`${e.message} (${(e.filename || '').split('/').pop()}:${e.lineno})`),
+);
+window.addEventListener('unhandledrejection', (e) =>
+  showJsError('promise: ' + ((e.reason && e.reason.message) || e.reason)),
+);
+
 // ------------------------------------------------------------------ physics
 const FIXED_DT = 1 / 120;
 let aiTick = 0;
@@ -339,8 +360,14 @@ function setupCity() {
   // re-home every AI car onto a random city segment with a fresh driver:
   // the 10 race opponents plus the extra traffic-only cars that make the
   // city feel busy (the extras only exist in KOTA mode).
-  const totalAI = opponents.length + CITY_EXTRA_CARS;
+  let totalAI = opponents.length + CITY_EXTRA_CARS;
   const spots = citySpawnSpots(totalAI, 'h2-1');
+  // defensive: never index past the spots array (a shortfall would throw
+  // mid-setup and strand the game on the last rendered frame)
+  if (spots.length < totalAI) {
+    console.warn(`[city] spawn spots short: ${spots.length} < ${totalAI}`);
+    totalAI = spots.length;
+  }
   for (let i = 0; i < totalAI; i++) {
     const s = spots[i];
     let o;
@@ -935,6 +962,7 @@ function frame(now) {
       }
     {
       const field = cityMode ? cityField : opponents;
+      if (!field) return; // city setup failed - surface it via the error overlay
       for (let i = 0; i < field.length; i++) {
         if (cityMode && i === cityFocus) continue; // just updated as the main car
         const o = field[i];

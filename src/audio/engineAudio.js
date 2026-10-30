@@ -81,6 +81,9 @@ export class EngineAudio {
     this.engines = new Map(); // car -> chain
     this._master = null;
     this._noiseBuffer = null;
+    // voice budget (see updateCar): phones choke on 40+ spatial chains
+    this.maxVoices = 11; // the player + the 10 nearest AI cars
+    this.listenRadius = 45; // metres; beyond this the rolloff is inaudible
     // listener (camera) state
     this._lPos = { x: 0, y: 0, z: 0 };
     this._lVel = { x: 0, y: 0, z: 0 };
@@ -147,14 +150,43 @@ export class EngineAudio {
    * frame's state into it. Call once per car per frame after the physics
    * step. `main` is the player's car - it gets the extra exhaust-noise layer
    * and a slightly louder gain.
+   *
+   * VOICE CULLING: a phone's audio thread cannot sustain 45+ spatial synth
+   * chains (46 chains = hum + choppiness). Only the nearest `maxVoices`
+   * cars keep live engines; beyond `listenRadius` a car is inaudible anyway
+   * (exponential rolloff), so its voice is faded out and released.
    */
   updateCar(car, main, pos, vel) {
     if (!this.ready) return;
     const ctx = this.ctx;
+    const t = ctx.currentTime;
+
+    if (!main) {
+      // inaudible? release the voice (or never build it)
+      if (this._hasPos) {
+        const dx = pos.x - this._lPos.x;
+        const dz = pos.z - this._lPos.z;
+        if (dx * dx + dz * dz > this.listenRadius * this.listenRadius) {
+          this._releaseEngine(car);
+          return;
+        }
+        // at capacity: the farthest voice loses its slot. If that is us
+        // (or someone closer is the farthest, i.e. we are), we go quiet.
+        if (this.engines.size >= this.maxVoices) {
+          const far = this._farthestEngine();
+          const ourDistSq = dx * dx + dz * dz;
+          if (!far || far.car === car || far.distSq < ourDistSq) {
+            this._releaseEngine(car);
+            return;
+          }
+          this._releaseEngine(far.car);
+        }
+      }
+    }
+
     let e = this.engines.get(car);
     if (!e) e = this._buildEngine(car, main);
 
-    const t = ctx.currentTime;
     const tm = car.telemetry;
     const rpm = Number.isFinite(tm.rpm) ? tm.rpm : 0;
     const throttle = Number.isFinite(tm.throttle) ? tm.throttle : 0;
@@ -199,6 +231,42 @@ export class EngineAudio {
       setVel(e.panner, vel.x, vel.y, vel.z);
     }
     e.lastX = pos.x; e.lastY = pos.y; e.lastZ = pos.z;
+  }
+
+  /** The active voice farthest from the listener (excludes `car`). */
+  _farthestEngine(car) {
+    let far = null;
+    for (const [c, e] of this.engines) {
+      if (c === car || e.isMain) continue;
+      const dx = e.lastX - this._lPos.x;
+      const dz = e.lastZ - this._lPos.z;
+      const d2 = dx * dx + dz * dz;
+      if (!far || d2 > far.distSq) far = { car: c, distSq: d2 };
+    }
+    return far;
+  }
+
+  /** Fade a voice out and tear its nodes down (frees the audio thread). */
+  _releaseEngine(car) {
+    const e = this.engines.get(car);
+    if (!e) return;
+    this.engines.delete(car);
+    const t = this.ctx.currentTime;
+    try {
+      e.gain.gain.cancelScheduledValues(t);
+      e.gain.gain.setTargetAtTime(0, t, 0.03);
+      const stopAt = t + 0.12;
+      e.o1.stop(stopAt); e.o2.stop(stopAt); e.o3.stop(stopAt);
+      e.lfo1.stop(stopAt); e.lfo2.stop(stopAt);
+      if (e.noiseSrc) e.noiseSrc.stop(stopAt);
+    } catch { /* already stopped */ }
+    // let the fade finish, then disconnect so the nodes are GC-able
+    setTimeout(() => {
+      try {
+        e.panner.disconnect(); e.filter.disconnect(); e.gain.disconnect();
+        e.o1g.disconnect(); e.o2g.disconnect(); e.o3g.disconnect();
+      } catch { /* already disconnected */ }
+    }, 200);
   }
 
   _buildEngine(car, main) {
@@ -258,6 +326,7 @@ export class EngineAudio {
     // exhaust hiss: player car only (the ears are IN this engine)
     let noiseGain = null;
     let noiseFilter = null;
+    let noiseSrc = null;
     if (main) {
       noiseGain = ctx.createGain();
       noiseGain.gain.value = 0;
@@ -265,8 +334,8 @@ export class EngineAudio {
       noiseFilter.type = 'bandpass';
       noiseFilter.Q.value = 0.6;
       noiseFilter.frequency.value = 900;
-      const src = this._makeNoiseBufferSource();
-      src.connect(noiseFilter).connect(noiseGain).connect(panner);
+      noiseSrc = this._makeNoiseBufferSource();
+      noiseSrc.connect(noiseFilter).connect(noiseGain).connect(panner);
     }
 
     o1.start(t);
@@ -276,7 +345,10 @@ export class EngineAudio {
     lfo2.start(t);
 
     const e = {
-      o1, o2, o3, lfo1, lfo2, filter, gain, panner, noiseGain, noiseFilter,
+      o1, o2, o3, lfo1, lfo2, filter, gain, panner,
+      o1g, o2g, o3g,
+      noiseGain, noiseFilter, noiseSrc,
+      isMain: main,
       hasPos: false, lastX: 0, lastY: 0, lastZ: 0,
     };
     this.engines.set(car, e);
@@ -322,7 +394,7 @@ export class EngineAudio {
   dispose() {
     if (!this.ready) return;
     for (const e of this.engines.values()) {
-      try { e.o1.stop(); e.o2.stop(); e.o3.stop(); e.lfo1.stop(); e.lfo2.stop(); } catch { /* already stopped */ }
+      try { e.o1.stop(); e.o2.stop(); e.o3.stop(); e.lfo1.stop(); e.lfo2.stop(); if (e.noiseSrc) e.noiseSrc.stop(); } catch { /* already stopped */ }
     }
     this.engines.clear();
     this.ctx.close().catch(() => {});
