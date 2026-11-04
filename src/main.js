@@ -879,6 +879,12 @@ function frame(now) {
   let state = idle;
   let focusCar = car;
   let focusDriver = null;
+  // city: KENDARAAN (X) lets you grab any traffic car - you drive it and
+  // its AI stands down; leaving it parks it where it stopped.
+  // Function scope (not inside `if (started)`) because the audio block
+  // below that gate reads it every frame too.
+  const driveCar =
+    cityMode && cityFocus >= 0 && cityField ? cityField[cityFocus].car : car;
   if (started) {
     if (!spectate) {
       state = input.update(dt);
@@ -889,10 +895,6 @@ function frame(now) {
     }
     sessionTime += dt;
     if (cityMode) cityTime += dt;
-
-    // city: KENDARAAN (X) lets you grab any traffic car - you drive it and
-    // its AI stands down; leaving it parks it where it stopped
-    const driveCar = cityMode && cityFocus >= 0 ? cityField[cityFocus].car : car;
 
     // fixed-step physics with a spiral-of-death guard. In spectator mode the
     // player's car is in `opponents` (the 11th AI), so the single loop below
