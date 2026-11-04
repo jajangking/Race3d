@@ -9,10 +9,14 @@ import * as THREE from 'three';
  *    long main straight, heavy right T1, left T2, S-chicane, left hairpin,
  *    long flowing right back into the straight.
  *
- *  RALLYCROSS - a short (~1.4 km) twisty circuit with TWO gravel sections
- *    (low grip) mixed into the tarmac, the way real rallycross tracks are
- *    built: right sweeper onto gravel, gravel chicane, tarmac island,
- *    gravel hairpin, tight left, sweeping right, home straight.
+ *  RALLYCROSS - a short (~1.5 km) EXTREME corner-gauntlet circuit with TWO
+ *    gravel sections (low grip) mixed into the tarmac, the way real
+ *    rallycross tracks are built: 90-degree sweeper, full 180-degree gravel
+ *    hairpin, a three-hit gravel chicane (right-left-left), two more sharp
+ *    90-degree hits, and a long flowing left back to the home straight.
+ *    Control points are placed every ~30 m (including dense arc points in
+ *    the corners) so the Catmull-Rom spline cannot kink; effective corner
+ *    radii come out 14-25 m.
  *
  * The control points are also consumed by the headless AI scripts, so the
  * sim tests always run the exact same layout as the game.
@@ -47,23 +51,71 @@ const CIRCUIT_PTS = [
 
 const RALLY_PTS = [
   // ------------------------------------------------ start/finish straight
-  new THREE.Vector3(-190, 0, 150), // 0 A: start of the main straight (u = 0)
-  new THREE.Vector3(  30, 0, 152), // 1 B: start/finish line
-  new THREE.Vector3( 200, 0, 148), // 2 C: end of the straight
-  // ------------------------------------------------ T1 (right sweeper, onto gravel)
-  new THREE.Vector3( 272, 0, 108), // 3 D: T1 entry
-  new THREE.Vector3( 292, 0,  18), // 4 E: T1 apex (gravel)
-  new THREE.Vector3( 240, 0, -56), // 5 F: T1 exit (gravel)
-  // ------------------------------------------------ gravel chicane (left-right)
-  new THREE.Vector3( 150, 0,  -40), // 6 G: chicane left apex (gravel)
-  new THREE.Vector3(  66, 0,  -92), // 7 H: chicane right apex (gravel)
-  // ------------------------------------------------ tarmac island + T4 gravel hairpin
-  new THREE.Vector3( -58, 0, -122), // 8 I: hairpin entry
-  new THREE.Vector3(-148, 0,  -70), // 9 J: hairpin apex (gravel)
-  new THREE.Vector3(-142, 0,   16), // 10 K: hairpin exit
-  // ------------------------------------------------ T5 (tight left) + T6/T7 home
-  new THREE.Vector3(-208, 0,  74), // 11 L: T5 apex
-  new THREE.Vector3(-232, 0, 112), // 12 M: sweeper flowing back to the straight
+  // (u = 0). The straight flows gently east so the 60 m grid and the
+  // corner-exit ramp feed into it without a kink.
+  new THREE.Vector3(-140, 0, 145), //  0 A: u = 0 (start line)
+  new THREE.Vector3(-110, 0, 152), //  1
+  new THREE.Vector3( -75, 0, 157), //  2
+  new THREE.Vector3( -35, 0, 160), //  3
+  new THREE.Vector3(   5, 0, 161), //  4
+  new THREE.Vector3(  45, 0, 162), //  5
+  new THREE.Vector3(  85, 0, 162), //  6
+  new THREE.Vector3( 125, 0, 162), //  7
+  new THREE.Vector3( 165, 0, 162), //  8 C: end of the straight
+  // ------------------------------------------------ T1 (sharp 90, R 35)
+  new THREE.Vector3( 189.7, 0, 151.8), //  9 T1 arc (R35, centre 165/127)
+  new THREE.Vector3( 200, 0, 127), // 10 T1 exit, now heading north
+  // ------------------------------------------------ right straight (north)
+  new THREE.Vector3( 200, 0, 90), // 11
+  new THREE.Vector3( 200, 0, 55), // 12
+  new THREE.Vector3( 200, 0, 20), // 13
+  new THREE.Vector3( 200, 0, -15), // 14
+  new THREE.Vector3( 200, 0, -50), // 15
+  new THREE.Vector3( 200, 0, -85), // 16
+  new THREE.Vector3( 200, 0, -115), // 17
+  // ------------------------------------------------ T2 (full 180 hairpin, R 32,
+  // GRAVEL): north in, loop the top, south out
+  new THREE.Vector3( 200, 0, -140), // 18 T2 entry
+  new THREE.Vector3( 190.6, 0, -162.6), // 19 T2 arc 45deg
+  new THREE.Vector3( 168, 0, -172), // 20 T2 apex
+  new THREE.Vector3( 145.4, 0, -162.6), // 21 T2 arc 135deg
+  new THREE.Vector3( 136, 0, -140), // 22 T2 exit, heading south
+  // ------------------------------------------------ south straight + T3 (sharp
+  // 90 right, R 30, GRAVEL)
+  new THREE.Vector3( 136, 0, -105), // 23
+  new THREE.Vector3( 136, 0, -70), // 24 T3 entry
+  new THREE.Vector3( 127.2, 0, -48.8), // 25 T3 arc (R30, centre 106/-70)
+  new THREE.Vector3( 106, 0, -40), // 26 T3 exit, heading west
+  // ------------------------------------------------ short tarmac island, then
+  // the GRAVEL CHICANE: T3b (90 right) - T3c (90 left), hit hard
+  new THREE.Vector3( 80, 0, -40), // 27
+  new THREE.Vector3( 55, 0, -40), // 28
+  new THREE.Vector3( 30, 0, -40), // 29 T3b entry
+  new THREE.Vector3( 8.8, 0, -48.8), // 30 T3b arc (R30, centre 30/-70)
+  new THREE.Vector3( 0, 0, -70), // 31 T3b exit, heading north
+  new THREE.Vector3( 0, 0, -87), // 32
+  new THREE.Vector3( 0, 0, -105), // 33 T3c entry
+  new THREE.Vector3(-8.8, 0, -126.2), // 34 T3c arc (R30, centre -30/-105)
+  new THREE.Vector3(-30, 0, -135), // 35 T3c exit, heading west
+  // ------------------------------------------------ west leg + T4 (sharp 90
+  // left, R 30) onto the long left straight
+  new THREE.Vector3(-63, 0, -135), // 36
+  new THREE.Vector3(-96, 0, -135), // 37
+  new THREE.Vector3(-129, 0, -135), // 38
+  new THREE.Vector3(-155, 0, -135), // 39 T4 entry
+  new THREE.Vector3(-176.2, 0, -126.2), // 40 T4 arc (R30, centre -155/-105)
+  new THREE.Vector3(-185, 0, -105), // 41 T4 exit, heading south
+  // ------------------------------------------------ long left straight (south)
+  new THREE.Vector3(-186, 0, -70), // 42
+  new THREE.Vector3(-188, 0, -35), // 43
+  new THREE.Vector3(-190, 0, 0), // 44
+  new THREE.Vector3(-192, 0, 35), // 45
+  new THREE.Vector3(-194, 0, 70), // 46
+  new THREE.Vector3(-196, 0, 105), // 47 T5 entry
+  // ------------------------------------------------ T5 (sharp 90 left, R 30)
+  // flowing back into the home straight
+  new THREE.Vector3(-187.2, 0, 126.2), // 48 T5 arc (R30, centre -166/105)
+  new THREE.Vector3(-166, 0, 135), // 49 T5 exit, heading east -> A
 ];
 
 export function buildTrackCurve() {
@@ -164,17 +216,17 @@ export const TRACKS = {
     'RALLYCROSS',
     buildRallyCurve(),
     RALLY_PTS,
-    // zone 1: T1 sweeper + chicane (mid T1 entry -> mid chicane exit)
-    // zone 2: the hairpin (approach -> exit)
+    // zone 1: the gravel hairpin + T3 (mid right straight -> mid T3 exit)
+    // zone 2: the gravel chicane T3b + T3c (mid island -> mid west leg)
     [
-      [3.55, 7.45],
-      [8.05, 10.55],
+      [17.5, 26.5],
+      [28.5, 35.5],
     ],
   ),
 };
 
-// The rallycross is a technical mixed-surface circuit: the AI's steady-state
-// 0.9 g corner target is a lower bound there (steering rate + load transfer
-// into the gravel burn extra margin), so it runs 18% inside the limit.
-// The all-tarmac circuit keeps its aggressive line.
+// The rallycross is an extreme technical mixed-surface circuit: the AI's
+// steady-state 1.25 g corner target is a lower bound there (steering rate +
+// load transfer into the gravel burn extra margin), so it runs 18% inside
+// the limit. The all-tarmac circuit keeps its aggressive line.
 TRACKS.rally.cornerGripMargin = 0.82;
