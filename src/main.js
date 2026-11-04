@@ -587,9 +587,9 @@ function activateRally() {
 function begin(mode = 'drive') {
   if (started) return;
   started = true;
-  spectate = mode === 'spectate';
+  spectate = mode === 'spectate' || mode === 'rally-spectate';
   cityMode = mode === 'city';
-  const rallyMode = mode === 'rally';
+  const rallyMode = mode === 'rally' || mode === 'rally-spectate';
   // this call comes from a click/touch - the moment the browser lets audio in
   engineAudio.start();
   if (intro) intro.classList.add('is-hidden');
@@ -641,6 +641,7 @@ function bindStart(el, mode) {
 }
 bindStart(startBtn, 'drive');
 bindStart(startWatchBtn, 'spectate');
+bindStart(document.getElementById('start-rally-watch'), 'rally-spectate');
 bindStart(document.getElementById('start-city'), 'city');
 bindStart(document.getElementById('start-rally'), 'rally');
 input.on('start', () => begin('drive'));
@@ -652,7 +653,18 @@ const autoSteer = Number(params.get('steer') ?? 0);
 if (params.has('auto')) {
   const am = params.get('mode');
   setTimeout(
-    () => begin(am === 'spectate' ? 'spectate' : am === 'city' ? 'city' : am === 'rally' ? 'rally' : 'drive'),
+    () =>
+      begin(
+        am === 'spectate'
+          ? 'spectate'
+          : am === 'rally-spectate'
+            ? 'rally-spectate'
+            : am === 'city'
+              ? 'city'
+              : am === 'rally'
+                ? 'rally'
+                : 'drive',
+      ),
     30,
   );
 }

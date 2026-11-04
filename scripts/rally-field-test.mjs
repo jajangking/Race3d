@@ -15,7 +15,10 @@ import { TRACKS } from '../src/trackLayout.js';
 await RAPIER.init();
 const DT = 1 / 120;
 const SECONDS = Number(process.argv[2] ?? 150);
-const N = 10;
+// N override via env (e.g. N=11 = the spectate field: 10 opponents + the
+// player's car as the 11th AI). Cars beyond the 10 tuned setups get the
+// spectate player setup.
+const N = Number(process.env.N ?? 10);
 
 const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
 world.timestep = DT;
@@ -65,9 +68,10 @@ for (let i = 0; i < N; i++) {
   const car = new Vehicle({ RAPIER, world, position: slot.pos, quaternion: slot.q });
   const driver = new AIDriver(car, track, {
     enabled: true,
-    pace: PACE[i],
-    lineScale: LINE[i],
-    laneBias: BIAS[i],
+    // i >= 10 = the player's car in spectate mode (fixed 1.0 / 0.97 / 0)
+    pace: i < PACE.length ? PACE[i] : 1.0,
+    lineScale: i < LINE.length ? LINE[i] : 0.97,
+    laneBias: i < BIAS.length ? BIAS[i] : 0,
     laneOffset: (col === 0 ? -COL : COL) + (((i * 5) % 7) - 3) * 0.18,
     parity: i % 2,
   }, world);
