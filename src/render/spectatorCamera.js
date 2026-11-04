@@ -8,9 +8,12 @@ import * as THREE from 'three';
  *             Q-learning agent: it is NOT locked to one car - every cut it
  *             picks both the shot and its own subject from the whole field.
  *             Actions: a long slowly-orbiting HELICOPTER pass on whoever is
- *             most interesting, a static CORNER camera at the next big
- *             corner a car is about to take, a 1V1 close-up on the closest
- *             pair in the field (their battle), and a CRASH camera that
+ *             most interesting, a CORNER PTZ camera standing at the mast of
+ *             the next corner the subject is about to take (fixed position,
+ *             the head pans to follow the car through the corner while the
+ *             lens zooms in at the apex and back out), a 1V1 close-up on
+ *             the closest pair in the field (their battle), and a CRASH
+ *             camera - a slow high heli pass over the incident - that
  *             pre-empts everything the moment a car goes off track (driver
  *             recover/reverse mode) and holds until it is cleared.
  *             State: leader gap bucket x pack density around the leader
@@ -39,7 +42,7 @@ const TV_SHOTS = [
   { name: 'HELI', fov: 55, dur: [12, 17] },
   { name: 'CORN', fov: 38, dur: [6, 9] },
   { name: '1V1', fov: 36, dur: [6, 8] },
-  { name: 'CRASH', fov: 40, dur: [3, 6] },
+  { name: 'CRASH', fov: 55, dur: [3, 6] },
 ];
 
 const CINE_SHOTS = [
@@ -115,6 +118,11 @@ export class SpectatorCamera {
     this._shotSum = 0; // accumulated on-screen interest of the current shot
     this._shotFrames = 0;
     this._seen = new Map(); // car -> time it last was the on-screen subject
+    // corner PTZ: smoothed look target + distance-driven FOV
+    this._cornLook = new THREE.Vector3();
+    this._cornGen = -1;
+    this._cornCorner = null; // the corner locked for the current shot
+    this._dynFov = 0; // non-zero while the corner cam is driving the FOV
     this._loadDirector();
 
     // cinematic
@@ -285,7 +293,8 @@ export class SpectatorCamera {
     let fov;
     if (this.mode === 'tv') {
       this._tvShot(dt, driver, car);
-      fov = TV_SHOTS[this.shot].fov;
+      // the corner PTZ drives its own lens (zoom in/out with distance)
+      fov = this.shot === 1 && this._dynFov ? this._dynFov : TV_SHOTS[this.shot].fov;
     } else if (this.mode === 'orbit') {
       this._orbitShot(dt);
       fov = 55;
@@ -444,9 +453,9 @@ export class SpectatorCamera {
       this._heliShot();
       return;
     } else if (this.shot === 1) {
-      // corn: static trackside camera at the next big corner ahead of the
-      // subject car - it drives into the frame
-      this._cornerShot(this._subjectU());
+      // corn: PTZ camera at the mast of the next corner ahead of the
+      // subject car - pans with the car, zooms at the apex
+      this._cornerShot(dt, this._subjectU());
       return;
     }
     // 1v1: close-up on the closest pair, from behind the trailing car
@@ -512,35 +521,50 @@ export class SpectatorCamera {
   _pickSubject(a, S, focusCar) {
     const f = this._field;
     if (!f || !f.length) return focusCar;
+    // broadcast rotation rule: a car that was just on screen (last 20 s)
+    // is skipped so the feed never locks onto one car; if the whole field
+    // is cooling down the closest candidate still wins
+    const now = this.time;
+    const cooling = (car) => {
+      const last = this._seen.get(car);
+      return last !== undefined && now - last < 20;
+    };
     if (a === 2) {
-      // 1V1: always the closest pair in the field - show its trailing car
+      // 1V1: the closest pair in the field - show its trailing car
       const n = f.length;
       const L = this.track.length;
-      let best = Infinity;
-      let trailer = null;
+      const pairs = [];
       for (let i = 0; i < n; i++) {
         const A = S.order[i];
         const B = S.order[(i + 1) % n];
         let g = (this._race.progress[A] - this._race.progress[B]) * L;
         if (g <= 0) g += L;
-        if (g < best) {
-          best = g;
-          trailer = f[B].car;
-        }
+        pairs.push({ g, car: f[B].car });
       }
-      if (trailer) return trailer;
+      pairs.sort((x, y) => x.g - y.g);
+      for (const p of pairs) {
+        if (!cooling(p.car)) return p.car;
+      }
+      return pairs[0].car;
     }
     // HELI / CORN: whoever is most interesting right now
-    let best = -1;
-    let bestCar = focusCar;
+    let best = -Infinity;
+    let bestCar = null;
+    let fb = -Infinity;
+    let fbCar = null;
     for (let i = 0; i < f.length; i++) {
-      const it = S.interests.get(f[i].car) || 0;
-      if (it > best) {
+      const car = f[i].car;
+      const it = S.interests.get(car) || 0;
+      if (it > fb) {
+        fb = it;
+        fbCar = car;
+      }
+      if (!cooling(car) && it > best) {
         best = it;
-        bestCar = f[i].car;
+        bestCar = car;
       }
     }
-    return bestCar;
+    return bestCar || fbCar || focusCar;
   }
 
   _seatSubject() {
@@ -610,42 +634,28 @@ export class SpectatorCamera {
   }
 
   _crashShot(dt) {
-    const target = this._crashTarget && this._crashTarget.body ? this._crashTarget : this._focus;
-    const t = target.body.translation();
-    const q = target.body.rotation();
-    _camQuat.set(q.x, q.y, q.z, q.w);
-    _fwd.set(0, 0, 1).applyQuaternion(_camQuat);
-    _fwd.y = 0;
-    if (_fwd.lengthSq() < 1e-6) _fwd.set(0, 0, 1);
-    _fwd.normalize();
-    _center.set(t.x, t.y + 0.7, t.z);
-    // elevated trackside broadcast mast on the inside of the incident
-    const curve = this.track.curve;
-    let side = this.sideFlip;
-    if (this._field) {
-      for (let i = 0; i < this._field.length; i++) {
-        if (this._field[i].car === target) {
-          const d = this._field[i].driver;
-          const uu = d ? d.u : 0;
-          curve.getPointAt(uu, _trackPos);
-          curve.getTangentAt(uu, _trackTan);
-          _trackTan.y = 0;
-          _trackTan.normalize();
-          _trackRight.set(_trackTan.z, 0, -_trackTan.x);
-          const lat = (t.x - _trackPos.x) * _trackRight.x + (t.z - _trackPos.z) * _trackRight.z;
-          if (Math.abs(lat) > 2) side = lat > 0 ? -1 : 1; // inside of the incident
-          _desired.copy(_trackPos).addScaledVector(_trackRight, side * 12.5);
-          _desired.y = Math.max(_desired.y, 6.5);
-          _look.copy(_center);
-          this._setDamp(2.2, 2.8);
-          return;
-        }
-      }
-    }
-    _desired.copy(_fwd).multiplyScalar(-12).add(_center);
-    _desired.y = Math.max(_desired.y, 6.5);
+    // the incident cam is a slow high heli pass over the crashed car -
+    // same framing as the heli shot, wider orbit, no lead (the car may be
+    // stalled or reversing)
+    const target =
+      this._crashTarget && this._crashTarget.body
+        ? this._crashTarget
+        : this._subject && this._subject.body
+          ? this._subject
+          : this._focus;
+    if (!target) return;
+    this._subjectPose(target);
+    const t = this.time;
+    const ang = t * 0.16 + this.drift + 2.1; // slow orbit, offset from the heli
+    const r = 21 + 2 * Math.sin(t * 0.14);
+    _right.set(_fwd.z, 0, -_fwd.x);
+    _desired
+      .copy(_center)
+      .addScaledVector(_right, Math.cos(ang) * r)
+      .addScaledVector(_fwd, Math.sin(ang) * r);
+    _desired.y = _center.y + 23 + 2.2 * Math.sin(t * 0.13);
     _look.copy(_center);
-    this._setDamp(2.2, 2.8);
+    this._setDamp(1.1, 1.6);
   }
 
   // ---------------------------------------------------------- orbit shot
@@ -789,33 +799,65 @@ export class SpectatorCamera {
     return this._corners;
   }
 
-  _cornerShot(u) {
+  _cornerShot(dt, u) {
     const corners = this._ensureCorners();
     if (corners.length === 0) {
-      // no line data yet - fall back to the trackside slider
+      // no corner data yet - fall back to the trackside slider
       this._sideFallback(u);
       return;
     }
-    // the nearest major corner ahead of the focus car (wrap-aware)
-    let best = null;
-    let bestDist = Infinity;
-    for (let i = 0; i < corners.length; i++) {
-      const d = wrap(corners[i].u - u);
-      if (d < bestDist) { bestDist = d; best = corners[i]; }
-    }
     const curve = this.track.curve;
+    // the corner is locked at cut time and held for the whole shot: once
+    // the car passes the apex the cam keeps panning it out on the exit,
+    // and the NEXT cut picks the next corner (a real broadcast hand-off)
+    if (this._cornGen !== this._shotGen) {
+      this._cornGen = this._shotGen;
+      let best = null;
+      let bestDist = Infinity;
+      for (let i = 0; i < corners.length; i++) {
+        const d = wrap(corners[i].u - u);
+        if (d < bestDist) {
+          bestDist = d;
+          best = corners[i];
+        }
+      }
+      this._cornCorner = best;
+      curve.getPointAt(wrap(best.u - 0.010), this._cornLook);
+      this._cornLook.y = Math.max(this._cornLook.y, 0.9);
+    }
+    const best = this._cornCorner;
+    // the camera stands at its mast: outside of the corner, just past the
+    // tyre line - the same slot the visible mast is built at
     curve.getPointAt(best.u, _trackPos);
     curve.getTangentAt(best.u, _trackTan);
     _trackTan.y = 0;
     _trackTan.normalize();
     _trackRight.set(_trackTan.z, 0, -_trackTan.x);
-    // outside of the corner, just past the tyre line, at mast height
     _desired.copy(_trackPos).addScaledVector(_trackRight, best.side * 12.5);
     _desired.y = Math.max(_desired.y, 2.4);
-    // look ~17 m before the apex so the car enters the frame early
+    // PTZ head: wait ~17 m before the apex, then the look target follows
+    // the subject car as it drives through the corner
     curve.getPointAt(wrap(best.u - 0.010), _look);
     _look.y = Math.max(_look.y, 0.9);
-    this._setDamp(1.5, 2.0); // slow re-seat, then it just waits
+    const car = this._subject || this._focus;
+    if (car && car.body) {
+      const tp = car.body.translation();
+      const dCorner = Math.hypot(tp.x - _trackPos.x, tp.z - _trackPos.z);
+      if (dCorner < 130) {
+        // blend from the waiting point onto the car as it enters the zone
+        const w = THREE.MathUtils.clamp((130 - dCorner) / 40, 0, 1);
+        _to.set(tp.x, tp.y + 0.7, tp.z);
+        _look.lerp(_to, w);
+      }
+    }
+    // damped pan, like a real PTZ head
+    const k = 1 - Math.exp(-4.5 * dt);
+    this._cornLook.lerp(_look, k);
+    _look.copy(this._cornLook);
+    // lens: wide while the car is far, tight at the apex, wide on the exit
+    const d = Math.hypot(this._cornLook.x - _desired.x, this._cornLook.z - _desired.z);
+    this._dynFov = THREE.MathUtils.clamp(30 + ((d - 14) / 80) * 20, 30, 52);
+    this._setDamp(1.5, 2.0);
   }
 
   _sideFallback(u) {

@@ -15,7 +15,7 @@ import { TRACKS } from '../src/trackLayout.js';
 import { buildRacingLine } from '../src/ai/racingLine.js';
 
 const track = TRACKS.rally;
-buildRacingLine(track);
+const RACING_LINE = buildRacingLine(track); // cached on the layout, returned here
 
 // position/pose lookup table along the centreline
 const NS = 4000;
@@ -77,14 +77,19 @@ function cam() {
     up: new THREE.Vector3(0, 1, 0),
     fov: 50,
     aspect: 16 / 9,
-    lookAt() {},
+    lookAt(v) {
+      this._look = v;
+    },
     updateProjectionMatrix() {},
   };
   const canvas = { style: {}, addEventListener() {} };
+  // the scene track ships exactly this shape (createTrack): the racing
+  // line plus the layout-derived corner list with one cam slot each
   const c = new SpectatorCamera(camera, canvas, {
     curve: track.curve,
     length: track.length,
-    racingLine: track.racingLine,
+    racingLine: RACING_LINE,
+    corners: track.corners,
   });
   c.enabled = false;
   return c;
@@ -218,6 +223,7 @@ console.log('C: crash pre-emption regression');
   let releasedAt = null;
   let prevLabel = '';
   let bad = 0;
+  let crashYMax = 0;
   for (let f = 0; f < 60 * 40; f++) {
     const dt = 1 / 60;
     const t = f / 60;
@@ -239,12 +245,75 @@ console.log('C: crash pre-emption regression');
     if (c.label === 'TV·CRASH' && prevLabel !== 'TV·CRASH' && cutAt === null) cutAt = t;
     if (prevLabel === 'TV·CRASH' && c.label !== 'TV·CRASH' && releasedAt === null) releasedAt = t;
     prevLabel = c.label;
+    if (c.label === 'TV·CRASH') crashYMax = Math.max(crashYMax, c.pos.y);
     const p = c.pos;
     if (!isFinite(p.x + p.y + p.z) || p.y < -1 || p.y > 90) bad++;
   }
   ok(bad === 0, `0 bad frames (got ${bad})`);
   ok(cutAt !== null && Math.abs(cutAt - 10) < 0.1, `cuts to CRASH on the incident frame (t=${cutAt?.toFixed(2)})`);
   ok(releasedAt !== null && releasedAt >= 19.4 && releasedAt < 22, `holds ~1.5 s after the incident clears (released t=${releasedAt?.toFixed(2)})`);
+  ok(crashYMax > 15, `crash cam is the HELI (high pass, max y ${crashYMax.toFixed(1)} m)`);
+}
+
+// ------------------------------------------------------------ Test D
+console.log('D: corner PTZ (fixed mast, panning head, zooming lens)');
+{
+  delete store['race3d-qdirector-v1'];
+  const c = cam();
+  const c0 = track.corners[0];
+  const body = {
+    _v: new THREE.Vector3(),
+    _q: new THREE.Quaternion(),
+    translation() {
+      return this._v;
+    },
+    rotation() {
+      return this._q;
+    },
+  };
+  const entry = { car: { body }, driver: { u: c0.u - 0.06, mode: 'race', recoverTime: 0 } };
+  setPose(body, entry.driver.u);
+  // force the CORN shot on the corner the car is about to take
+  c.shot = 1;
+  c.shotTimer = 999;
+  c._subject = entry.car;
+  c._subjectEntry = entry;
+  c.initialised = false;
+  const samples = [];
+  let bad = 0;
+  for (let f = 0; f < 60 * 14; f++) {
+    const dt = 1 / 60;
+    const t = f / 60;
+    entry.driver.u = c0.u - 0.06 + t * 0.012; // apex pass at ~t=5 s
+    setPose(body, entry.driver.u);
+    c.update(dt, entry.car, entry.driver, [entry], { progress: [entry.driver.u] });
+    if (f % 6 === 0) {
+      samples.push({
+        t,
+        fov: c.camera.fov,
+        pos: c.pos.clone(),
+        look: c.camera._look ? c.camera._look.clone() : null,
+      });
+    }
+    const p = c.pos;
+    if (!isFinite(p.x + p.y + p.z) || p.y < -1 || p.y > 90) bad++;
+  }
+  ok(bad === 0, `0 bad frames (got ${bad})`);
+  const fovs = samples.map((s) => s.fov);
+  const spread = Math.max(...fovs) - Math.min(...fovs);
+  ok(spread > 4, `lens zooms in/out with the pass (FOV ${Math.min(...fovs).toFixed(1)}..${Math.max(...fovs).toFixed(1)}, spread ${spread.toFixed(1)} deg)`);
+  // head pan: look direction at approach (t~3 s) vs exit (t~9 s)
+  const at = (tt) => samples.reduce((a, b) => (Math.abs(b.t - tt) < Math.abs(a.t - tt) ? b : a));
+  const a = at(3);
+  const b = at(9);
+  const va = a.look.clone().sub(a.pos).normalize();
+  const vb = b.look.clone().sub(b.pos).normalize();
+  const deg = (Math.acos(THREE.MathUtils.clamp(va.dot(vb), -1, 1)) * 180) / Math.PI;
+  ok(deg > 10, `head pans with the car (look rotated ${deg.toFixed(1)} deg between approach and exit)`);
+  // mast stays put
+  const base = at(1).pos;
+  const drift = samples.reduce((m, s) => Math.max(m, s.pos.distanceTo(base)), 0);
+  ok(drift < 3, `camera position stays at the mast (drift ${drift.toFixed(2)} m)`);
 }
 
 console.log(failures === 0 ? '\nALL DIRECTOR TESTS PASS' : `\n${failures} FAILURES`);
