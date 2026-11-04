@@ -1037,7 +1037,7 @@ function frame(now) {
   carMesh.update(car);
   skidMarks.update(car);
   tireSmoke.update(dt, car);
-  if (started && spectate) spectator.update(dt, focusCar, focusDriver);
+  if (started && spectate) spectator.update(dt, focusCar, focusDriver, opponents, race);
   else if (cityMode) chase.update(dt, cityFocusCar());
   else if (!spectate) chase.update(dt, car);
 

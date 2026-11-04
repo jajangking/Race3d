@@ -4,10 +4,13 @@ import * as THREE from 'three';
  * Spectator cameras for AI-vs-AI race mode. The player watches the field and
  * switches between four shots with C, and picks which car to follow with X:
  *
- *   tv        a mini broadcast "director": hard-cuts between four different
- *             camera positions (high chase, overhead bird, road-level
- *             trackside, low front 3/4) every 5-8 s, and cuts again when
- *             the lead changes - like a real F1 feed
+ *   tv        a mini broadcast "director" in the F1 feed style: hard-cuts
+ *             every 5-8 s between a high chase, a static camera waiting at
+ *             the next big corner ahead (CORN), a slowly orbiting
+ *             helicopter (HELI), a car-by-car close-up that walks the field
+ *             lap by lap (ONE), a road-level trackside slider, an overhead
+ *             bird and a low front 3/4 - and cuts again when the lead
+ *             changes
  *   orbit     fully player-driven: drag to rotate (yaw + pitch), wheel or
  *             pinch to zoom. Auto-rotation only kicks in after the player
  *             has stopped touching it
@@ -25,8 +28,11 @@ const BASE_LABELS = { tv: 'TV', orbit: 'ORBIT', cinematic: 'CINEMATIC', drone: '
 
 const TV_SHOTS = [
   { name: 'CHASE', fov: 46 },
-  { name: 'BIRD', fov: 55 },
+  { name: 'CORN', fov: 38 },
+  { name: 'HELI', fov: 55 },
+  { name: 'ONE', fov: 36 },
   { name: 'SIDE', fov: 40 },
+  { name: 'BIRD', fov: 55 },
   { name: 'FRONT', fov: 42 },
 ];
 
@@ -71,6 +77,13 @@ export class SpectatorCamera {
     this.shot = 0;
     this.shotTimer = 6;
     this._focus = null;
+    this._shotGen = 0; // bumped on every hard cut (ONE re-picks its car)
+    this._field = null;
+    this._race = null;
+    this._corners = null; // cached major-corner list, built lazily
+    this.oneIdx = -1; // rank index of the last car ONE showed
+    this.oneCar = null; // object reference to the car ONE is on
+    this.oneGen = -1; // shot generation ONE was picked in
 
     // cinematic
     this.cineShot = 0;
@@ -97,6 +110,7 @@ export class SpectatorCamera {
     this.initialised = false;
     this.shot = 0;
     this.shotTimer = 6;
+    this._shotGen++;
     this.cineShot = 0;
     this.cineT = 0;
     return this.mode;
@@ -181,7 +195,7 @@ export class SpectatorCamera {
   /** Which side of the track a trackside camera sits on: outside of the
    *  corner, or opposite the car's lateral bias on a straight. */
   _sideFor(u) {
-    const line = this.track._aiLine;
+    const line = this.track.racingLine;
     let side = 0;
     if (line) {
       const i = Math.round(u * line.n) % line.n;
@@ -201,12 +215,17 @@ export class SpectatorCamera {
     return side;
   }
 
-  update(dt, car, driver) {
+  update(dt, car, driver, field, race) {
     this.time += dt;
-    // a broadcast cuts when the focus car changes (the lead changes)
+    this._field = field;
+    this._race = race;
+    // a broadcast cuts when the focus car changes (the lead changes); a
+    // fresh field means ONE's stored car is stale too - re-pick next time
     if (car !== this._focus) {
       this._focus = car;
       this.initialised = false;
+      this.oneCar = null;
+      this.oneGen = -1;
     }
 
     const t = car.body.translation();
@@ -220,7 +239,7 @@ export class SpectatorCamera {
 
     let fov;
     if (this.mode === 'tv') {
-      this._tvShot(dt, driver);
+      this._tvShot(dt, driver, car);
       fov = TV_SHOTS[this.shot].fov;
     } else if (this.mode === 'orbit') {
       this._orbitShot(dt);
@@ -238,6 +257,8 @@ export class SpectatorCamera {
       const tanH = Math.tan(THREE.MathUtils.degToRad(fov / 2)) / this.camera.aspect;
       fov = Math.min(95, THREE.MathUtils.radToDeg(2 * Math.atan(tanH)));
     }
+    this._k = 1 - Math.exp(-(this._kx || 2) * dt);
+    this._kUp = 1 - Math.exp(-(this._ky || 2.6) * dt);
     const k = this._k;
     const kUp = this._kUp;
 
@@ -265,7 +286,7 @@ export class SpectatorCamera {
   }
 
   // ------------------------------------------------------------ TV shots
-  _tvShot(dt, driver) {
+  _tvShot(dt, driver, focusCar) {
     this.shotTimer -= dt;
     const i = this.shot;
     if (this.shotTimer <= 0) {
@@ -276,21 +297,36 @@ export class SpectatorCamera {
       this.shot = next;
       this.shotTimer = 5 + Math.random() * 3;
       this.initialised = false; // hard cut, like a real broadcast
+      this._shotGen++;
     }
     const u = driver ? driver.u : 0;
+    if (i === 1) {
+      // corn: a static trackside camera waiting at the next big corner
+      // ahead of the focus car - the car drives into the frame
+      this._cornerShot(u);
+      return;
+    } else if (i === 2) {
+      // heli: high, slowly orbiting around the car, wide angle
+      this._heliShot();
+      return;
+    } else if (i === 3) {
+      // one: car-by-car close-up, walks the field in rank order
+      this._oneShot(focusCar);
+      return;
+    }
     if (i === 0) {
       // chase: high behind, car sits in the lower third
       _desired.copy(_fwd).multiplyScalar(-15).add(_center);
       _desired.y = Math.max(_desired.y, 10.5);
       _look.copy(_fwd).multiplyScalar(9).add(_center);
       this._setDamp(2.2, 2.8, dt);
-    } else if (i === 1) {
+    } else if (i === 5) {
       // bird: overhead, slightly behind, looking down the track
       _desired.copy(_fwd).multiplyScalar(-7).add(_center);
       _desired.y = Math.max(_desired.y, 21);
       _look.copy(_fwd).multiplyScalar(11).add(_center);
       this._setDamp(1.8, 2.4, dt);
-    } else if (i === 2) {
+    } else if (i === 6) {
       // side: road-level trackside cam, sliding along the track edge
       const curve = this.track.curve;
       const uu = wrap(u + 0.006);
@@ -405,9 +441,152 @@ export class SpectatorCamera {
     this._setDamp(1.6, 2.2, dt);
   }
 
-  _setDamp(kx, ky, dt) {
-    // stored so the caller's k/kUp pick up the right snappiness per shot
-    this._k = 1 - Math.exp(-kx * dt);
-    this._kUp = 1 - Math.exp(-ky * dt);
+
+  // ---- corner detection: merge curvature peaks of the AI line into the
+  // biggest corners, cached for the whole session (static per track).
+  _ensureCorners() {
+    if (this._corners) return this._corners;
+    const line = this.track.racingLine;
+    const out = [];
+    if (line && line.curvatureSigned) {
+      const n = line.n;
+      const c = line.curvatureSigned;
+      // adaptive threshold: corners are 35%+ of the track's sharpest bend
+      // (R ~ 13 m on the rally gauntlet, R ~ 20 m on the flowing circuit)
+      let maxC = 0;
+      for (let k = 0; k < n; k++) maxC = Math.max(maxC, Math.abs(c[k]));
+      const THR = Math.max(0.014, 0.35 * maxC);
+      let run = null;
+      const flush = () => {
+        if (!run) return;
+        // short spikes are spline artifacts / AI-line weaving, not corners
+        if (run.u1 - run.u0 < 4) { run = null; return; }
+        let mid = run.u0;
+        for (let k = run.u0; k <= run.u1; k++) {
+          if (Math.abs(c[k % n]) >= run.max) mid = k % n;
+        }
+        out.push({
+          u: (run.u0 + run.u1) / 2 / n,
+          side: Math.sign(c[mid]) || 1,
+          strength: run.max,
+        });
+        run = null;
+      };
+      for (let k = 0; k < n; k++) {
+        const v = Math.abs(c[k]);
+        if (v > THR) {
+          if (!run) run = { u0: k, u1: k, max: v };
+          else { run.u1 = k; if (v > run.max) run.max = v; }
+        } else if (run && k - run.u1 > 5) {
+          flush(); // 5-sample tolerance: the AI line weaves inside hairpins
+        }
+      }
+      flush();
+      out.sort((a, b) => b.strength - a.strength);
+    }
+    this._corners = out.slice(0, 13);
+    return this._corners;
+  }
+
+  _cornerShot(u) {
+    const corners = this._ensureCorners();
+    if (corners.length === 0) {
+      // no line data yet - fall back to the trackside slider
+      this._sideFallback(u);
+      return;
+    }
+    // the nearest major corner ahead of the focus car (wrap-aware)
+    let best = null;
+    let bestDist = Infinity;
+    for (let i = 0; i < corners.length; i++) {
+      const d = wrap(corners[i].u - u);
+      if (d < bestDist) { bestDist = d; best = corners[i]; }
+    }
+    const curve = this.track.curve;
+    curve.getPointAt(best.u, _trackPos);
+    curve.getTangentAt(best.u, _trackTan);
+    _trackTan.y = 0;
+    _trackTan.normalize();
+    _trackRight.set(_trackTan.z, 0, -_trackTan.x);
+    // outside of the corner, just past the tyre line, at mast height
+    _desired.copy(_trackPos).addScaledVector(_trackRight, best.side * 12.5);
+    _desired.y = Math.max(_desired.y, 2.4);
+    // look ~17 m before the apex so the car enters the frame early
+    curve.getPointAt(wrap(best.u - 0.010), _look);
+    _look.y = Math.max(_look.y, 0.9);
+    this._setDamp(1.5, 2.0); // slow re-seat, then it just waits
+  }
+
+  _sideFallback(u) {
+    const curve = this.track.curve;
+    const uu = wrap(u + 0.006);
+    curve.getPointAt(uu, _trackPos);
+    curve.getTangentAt(uu, _trackTan);
+    _trackTan.y = 0;
+    _trackTan.normalize();
+    _trackRight.set(_trackTan.z, 0, -_trackTan.x);
+    const side = this._sideFor(uu);
+    _desired.copy(_trackPos).addScaledVector(_trackRight, side * 11);
+    _desired.y = Math.max(_desired.y, 2.2);
+    _look.copy(_center).addScaledVector(_fwd, 4);
+    this._setDamp(3.2, 4);
+  }
+
+  _heliShot() {
+    const t = this.time;
+    const ang = t * 0.24 + this.drift; // one slow orbit every ~26 s
+    const r = 18 + 1.6 * Math.sin(t * 0.19);
+    _right.set(_fwd.z, 0, -_fwd.x);
+    _desired
+      .copy(_center)
+      .addScaledVector(_right, Math.cos(ang) * r)
+      .addScaledVector(_fwd, Math.sin(ang) * r);
+    _desired.y = _center.y + 21 + 2.2 * Math.sin(t * 0.16);
+    // lead the car a bit so it sits in the lower third of the frame
+    _look.copy(_center).addScaledVector(_fwd, 9);
+    this._setDamp(1.2, 1.8);
+  }
+
+  _oneShot(focusCar) {
+    // every time the director picks ONE, step to the next car in rank order
+    if (this.oneGen !== this._shotGen) {
+      this.oneGen = this._shotGen;
+      const f = this._field;
+      let pool = f && f.length ? f : [{ car: focusCar }];
+      let order;
+      if (this._race && this._race.progress && this._race.progress.length === pool.length) {
+        order = pool.map((_, i) => i).sort((a, b) => this._race.progress[b] - this._race.progress[a]);
+      } else {
+        order = pool.map((_, i) => i);
+      }
+      this.oneIdx = (this.oneIdx + 1) % order.length;
+      this.oneCar = pool[order[this.oneIdx]].car;
+    }
+    const target = this.oneCar && this.oneCar.body ? this.oneCar : focusCar;
+    const t = target.body.translation();
+    const q = target.body.rotation();
+    _camQuat.set(q.x, q.y, q.z, q.w);
+    _fwd.set(0, 0, 1).applyQuaternion(_camQuat);
+    _fwd.y = 0;
+    if (_fwd.lengthSq() < 1e-6) _fwd.set(0, 0, 1);
+    _fwd.normalize();
+    _right.set(_fwd.z, 0, -_fwd.x);
+    _center.set(t.x, t.y + 0.7, t.z);
+    // tight broadcast close-up: low, behind-side, the car fills the frame
+    const side = this.oneIdx % 2 === 0 ? 1 : -1;
+    _desired
+      .copy(_fwd)
+      .multiplyScalar(-6.5)
+      .add(_center)
+      .addScaledVector(_right, side * 4.2);
+    _desired.y = Math.max(_desired.y, 1.7);
+    _look.copy(_center).addScaledVector(_fwd, 5);
+    this._setDamp(2.8, 3.4);
+  }
+
+  _setDamp(kx, ky) {
+    // rates only - update() converts them with the real frame dt
+    this._kx = kx;
+    this._ky = ky;
   }
 }
