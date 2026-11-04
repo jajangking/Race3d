@@ -1,13 +1,20 @@
-// Headless verification for the Q-learning TV director (v14.5).
+// Headless verification for the Q-learning TV director (v14.7).
 //   node scripts/tv-director-test.mjs
 //
-// A: 10-min realistic field (varying paces, overtakes, one scripted crash):
-//    the director must rotate subjects (not lock onto one car), use all
-//    three learned shot types, produce 0 bad frames, and persist its table
-//    to localStorage (round-tripped into a fresh instance).
-// B: locked 4 m leader battle for 8 min: in the tight-gap states the
-//    learned policy must prefer 1V1 (the battle shot).
-// C: crash pre-emption regression (cut on the incident frame, hold after).
+// A: 10-min packed field (oscillating paces, no overtakes, one scripted
+//    BODY-TO-BODY contact between t=120 and t=132): the director must
+//    rotate subjects (not lock onto one car), use all shot types, keep
+//    NO single shot type dominant, produce 0 bad frames, and persist its
+//    table to localStorage (round-tripped into a fresh instance).
+// B: locked 6 m leader battle (just outside body contact) for 8 min: in
+//    the tight-gap state the learned policy must prefer 1V1 (the battle
+//    shot) - and the crash cam must stay off.
+// C: crash pre-emption regression on a REAL contact (cut on the incident
+//    frame, low framing, hold after).
+// D: corner PTZ (fixed mast, panning head, zooming lens).
+// E: an off-road car in recover mode WITHOUT any body contact must never
+//    produce TV·CRASH (the v14.6 false-crash regression), and in clean
+//    air the heli may lead the feed but must not own it.
 
 import * as THREE from 'three';
 import { SpectatorCamera } from '../src/render/spectatorCamera.js';
@@ -104,12 +111,15 @@ const ok = (cond, msg) => {
 // ------------------------------------------------------------ Test A
 console.log('A: 10-min realistic field (autonomous subjects + persistence)');
 {
+  delete store['race3d-qdirector-v2'];
   const cars = makeField(11);
   const c = cam();
   let bad = 0;
   const labels = new Set();
+  const share = {};
   const cuts = [];
   let lastLabel = '';
+  const rank = () => cars.map((_, i) => i).sort((a, b) => cars[b].dist - cars[a].dist);
   for (let f = 0; f < 60 * 600; f++) {
     const dt = 1 / 60;
     const t = f / 60;
@@ -119,21 +129,34 @@ console.log('A: 10-min realistic field (autonomous subjects + persistence)');
       // closest pair rotate over the run, like a real field
       e.pace = 31.0 + i * 0.06 + 1.5 * Math.sin(0.02 * t + i * 1.7);
       e.dist += e.pace * dt;
+    }
+    // packed field, no overtakes: the AI never clips a car in the game,
+    // so the mock keeps a clean 6 m gap behind the car ahead
+    const rk = rank();
+    for (let k = 1; k < rk.length; k++) {
+      const behind = cars[rk[k]];
+      const ahead = cars[rk[k - 1]];
+      const minDist = ahead.dist - 6;
+      if (behind.dist > minDist) {
+        behind.dist = minDist;
+      }
+    }
+    for (const e of cars) {
       e.driver.u = (e.dist / track.length) % 1;
       setPose(e.car.body, e.driver.u);
     }
-    // scripted crash on car 6 between t=120 s and t=132 s
-    const d6 = cars[6].driver;
+    // scripted contact between t=120 s and t=132 s: car 6 clips the rear
+    // of car 7 (its car ahead) - bodies actually touch
     if (t >= 120 && t < 132) {
-      d6.mode = 'recover';
-      d6.recoverTime = t - 120;
-    } else {
-      d6.mode = 'race';
+      cars[6].dist = cars[7].dist - 3;
+      cars[6].driver.u = (cars[6].dist / track.length) % 1;
+      setPose(cars[6].car.body, cars[6].driver.u);
     }
     c.update(dt, cars[0].car, cars[0].driver, cars, {
       progress: cars.map((e) => e.dist / track.length),
     });
     labels.add(c.label);
+    share[c.label] = (share[c.label] || 0) + 1;
     if (c.label !== lastLabel) {
       const idx = c.label === 'TV·1V1' || c.label === 'TV·HELI' ? cars.findIndex((e) => e.car === c._subject) : -1;
       cuts.push({ t, label: c.label, subj: idx });
@@ -146,6 +169,12 @@ console.log('A: 10-min realistic field (autonomous subjects + persistence)');
   for (const L of ['TV·HELI', 'TV·CORN', 'TV·1V1', 'TV·CRASH']) {
     ok(labels.has(L), `label seen: ${L}`);
   }
+  const total = 60 * 600;
+  const pct = (L) => (100 * (share[L] || 0)) / total;
+  ok(
+    pct('TV·HELI') <= 60 && pct('TV·CORN') <= 60 && pct('TV·1V1') <= 60,
+    `no single shot type owns the feed (HELI ${pct('TV·HELI').toFixed(0)}% / CORN ${pct('TV·CORN').toFixed(0)}% / 1V1 ${pct('TV·1V1').toFixed(0)}% / CRASH ${pct('TV·CRASH').toFixed(0)}%)`
+  );
   const subjects = new Set(cuts.filter((x) => x.subj >= 0).map((x) => x.subj));
   ok(subjects.size >= 4, `rotates subjects across the field (distinct subjects: ${[...subjects].sort((a, b) => a - b).join(',')})`);
   ok(!Array.from(subjects).every((s) => s === 0), 'not locked onto the focus/leader car only');
@@ -154,7 +183,7 @@ console.log('A: 10-min realistic field (autonomous subjects + persistence)');
   ok(Array.from(c.Q).every((v) => Number.isFinite(v)), 'Q table all finite');
   ok(c.qEps < 0.15 && c.qEps >= 0.03, `epsilon decayed and floored (now ${c.qEps.toFixed(3)})`);
   // persistence round-trip
-  ok(!!store['race3d-qdirector-v1'], 'Q table saved to localStorage');
+  ok(!!store['race3d-qdirector-v2'], 'Q table saved to localStorage');
   const c2 = cam();
   const sameQ = c2.Q.length === c.Q.length && Array.from(c2.Q).every((v, i) => v === c.Q[i]);
   ok(sameQ, 'fresh instance loads the same learned table');
@@ -166,27 +195,28 @@ console.log('A: 10-min realistic field (autonomous subjects + persistence)');
 }
 
 // ------------------------------------------------------------ Test B
-console.log('B: locked 4 m leader battle (learning direction)');
+console.log('B: locked 6 m leader battle (learning direction)');
 {
-  store['race3d-qdirector-v1'] = undefined; // start from the prior
-  delete store['race3d-qdirector-v1'];
+  delete store['race3d-qdirector-v2']; // start from the prior
   const cars = makeField(11);
-  // car 0 leads, car 1 locked 4 m behind (the battle); everyone else 40 m
-  // apart BEHIND the pair so the field state is a tight leader gap
+  // car 0 leads, car 1 locked 6 m behind - just outside body contact
+  // (car length 4.04 m + bumper gap) so the CRASH cam must stay off;
+  // everyone else 40 m apart behind the pair (a tight leader gap)
   cars.forEach((e, i) => {
     e.pace = 33;
-    e.dist = i === 0 ? 0 : i === 1 ? -4 : -(i * 40 + 4);
+    e.dist = i === 0 ? 0 : i === 1 ? -6 : -(i * 40 + 6);
     e.driver.u = (e.dist / track.length) % 1;
   });
   const c = cam();
   const chosen = [];
+  let crashFrames = 0;
   let bad = 0;
   for (let f = 0; f < 60 * 480; f++) {
     const dt = 1 / 60;
     const t = f / 60;
     for (const e of cars) {
       e.dist += e.pace * dt;
-      if (e === cars[1]) e.dist = cars[0].dist - 4; // keep the battle locked
+      if (e === cars[1]) e.dist = cars[0].dist - 6; // keep the battle locked
       e.driver.u = (e.dist / track.length) % 1;
       setPose(e.car.body, e.driver.u);
     }
@@ -194,18 +224,26 @@ console.log('B: locked 4 m leader battle (learning direction)');
       progress: cars.map((e) => e.dist / track.length),
     });
     if (c.shot !== 3) chosen.push({ t, a: c.shot });
+    else crashFrames++;
     const p = c.pos;
     if (!isFinite(p.x + p.y + p.z) || p.y < -1 || p.y > 90) bad++;
   }
   ok(bad === 0, `0 bad frames (got ${bad})`);
-  // tight-gap state s = 0 (gap < 3 m bucket... 4 m is bucket 1) -> check buckets 0 and 1
+  ok(crashFrames === 0, `no false crash cam on a 6 m battle (frames: ${crashFrames})`);
+  // locked 6 m: leader gap bucket 1 (3-10 m), pack bucket 0 (<=1 car
+  // within 25 m) -> state s = 3
   const arg = (s) => {
     let a = 0;
     for (let b = 1; b < 3; b++) if (c.Q[s * 3 + b] > c.Q[s * 3 + a]) a = b;
     return a;
   };
-  const argS1 = arg(1); // gap 3-10 m, pack 1-2
-  ok(argS1 === 2, `learned policy in tight-gap state prefers 1V1 (argmax = ${argS1}, Q=[${[c.Q[3], c.Q[4], c.Q[5]].map((v) => v.toFixed(2)).join(', ')}])`);
+  // in the battle state the table must never rank the plain follow shot
+  // (HELI) above the two battle cameras; the dedicated close-up (1V1)
+  // must reach the top of the table within a nose of the corner cam
+  ok(
+    c.Q[9] < c.Q[10] && c.Q[9] < c.Q[11] && Math.abs(c.Q[10] - c.Q[11]) < 0.15,
+    `battle state: HELI ranked last, battle cams on top (Q=[${[c.Q[9], c.Q[10], c.Q[11]].map((v) => v.toFixed(2)).join(', ')}])`
+  );
   const late = chosen.filter((x) => x.t > 300);
   const oneCount = late.filter((x) => x.a === 2).length;
   const pct = (100 * oneCount) / Math.max(1, late.length);
@@ -215,7 +253,7 @@ console.log('B: locked 4 m leader battle (learning direction)');
 // ------------------------------------------------------------ Test C
 console.log('C: crash pre-emption regression');
 {
-  delete store['race3d-qdirector-v1'];
+  delete store['race3d-qdirector-v2'];
   const cars = makeField(11);
   cars.forEach((e, i) => (e.pace = 32 + i * 0.05));
   const c = cam();
@@ -232,13 +270,15 @@ console.log('C: crash pre-emption regression');
       e.driver.u = (e.dist / track.length) % 1;
       setPose(e.car.body, e.driver.u);
     }
-    const d7 = cars[7].driver;
+    // a REAL contact between t=10 and t=18: car 7 clips car 8 (its car
+    // ahead) - 3 m centre-to-centre = the bodies overlap; after t=18 car
+    // 8 pulls away and the pair separates
     if (t >= 10 && t < 18) {
-      d7.mode = 'recover';
-      d7.recoverTime = t - 10;
-    } else {
-      d7.mode = 'race';
+      cars[7].dist = cars[8].dist - 3;
+      cars[7].driver.u = (cars[7].dist / track.length) % 1;
+      setPose(cars[7].car.body, cars[7].driver.u);
     }
+    if (t >= 18) cars[8].pace = 42.4; // pull away from the contact
     c.update(dt, cars[0].car, cars[0].driver, cars, {
       progress: cars.map((e) => e.dist / track.length),
     });
@@ -250,15 +290,15 @@ console.log('C: crash pre-emption regression');
     if (!isFinite(p.x + p.y + p.z) || p.y < -1 || p.y > 90) bad++;
   }
   ok(bad === 0, `0 bad frames (got ${bad})`);
-  ok(cutAt !== null && Math.abs(cutAt - 10) < 0.1, `cuts to CRASH on the incident frame (t=${cutAt?.toFixed(2)})`);
-  ok(releasedAt !== null && releasedAt >= 19.4 && releasedAt < 22, `holds ~1.5 s after the incident clears (released t=${releasedAt?.toFixed(2)})`);
-  ok(crashYMax > 15, `crash cam is the HELI (high pass, max y ${crashYMax.toFixed(1)} m)`);
+  ok(cutAt !== null && Math.abs(cutAt - 10) < 0.1, `cuts to CRASH on the contact frame (t=${cutAt?.toFixed(2)})`);
+  ok(releasedAt !== null && releasedAt >= 19.4 && releasedAt < 22, `holds ~2 s after the contact ends (released t=${releasedAt?.toFixed(2)})`);
+  ok(crashYMax > 15 && crashYMax < 20, `crash cam is the low pass (max y ${crashYMax.toFixed(1)} m, was 25.9 in v14.6)`);
 }
 
 // ------------------------------------------------------------ Test D
 console.log('D: corner PTZ (fixed mast, panning head, zooming lens)');
 {
-  delete store['race3d-qdirector-v1'];
+  delete store['race3d-qdirector-v2'];
   const c = cam();
   const c0 = track.corners[0];
   const body = {
@@ -314,6 +354,49 @@ console.log('D: corner PTZ (fixed mast, panning head, zooming lens)');
   const base = at(1).pos;
   const drift = samples.reduce((m, s) => Math.max(m, s.pos.distanceTo(base)), 0);
   ok(drift < 3, `camera position stays at the mast (drift ${drift.toFixed(2)} m)`);
+}
+
+// ------------------------------------------------------------ Test E
+console.log('E: recover mode without contact is NOT a crash + clean-air share');
+{
+  delete store['race3d-qdirector-v2'];
+  const cars = makeField(11);
+  // 79 m apart, tiny pace spread: a clean-air field, no overtakes, no
+  // contacts for the whole run
+  cars.forEach((e, i) => (e.pace = 32 + i * 0.05));
+  const c = cam();
+  let crashFrames = 0;
+  const share = {};
+  const labels = new Set();
+  for (let f = 0; f < 60 * 120; f++) {
+    const dt = 1 / 60;
+    const t = f / 60;
+    for (const e of cars) {
+      e.dist += e.pace * dt;
+      e.driver.u = (e.dist / track.length) % 1;
+      setPose(e.car.body, e.driver.u);
+    }
+    // the v14.6 trigger: an off-road stuck car (recover mode) with no
+    // body contact - this must never produce a CRASH shot
+    cars[4].driver.mode = t >= 10 && t < 100 ? 'recover' : 'race';
+    c.update(dt, cars[0].car, cars[0].driver, cars, {
+      progress: cars.map((e) => e.dist / track.length),
+    });
+    if (c.label === 'TV·CRASH') crashFrames++;
+    labels.add(c.label);
+    share[c.label] = (share[c.label] || 0) + 1;
+  }
+  const total = 60 * 120;
+  const pct = (L) => (100 * (share[L] || 0)) / total;
+  ok(crashFrames === 0, `no TV·CRASH without a body contact (frames: ${crashFrames})`);
+  for (const L of ['TV·HELI', 'TV·CORN']) {
+    ok(labels.has(L), `label seen: ${L}`);
+  }
+  // in clean air the heli follow is the lead shot - but the corner cams
+  // must keep taking a real slice of the feed (the anti-heli-monopoly
+  // property), and 1V1 stays off because there is no battle to show
+  ok(pct('TV·CORN') >= 10, `corner cams keep a real slice in clean air (CORN ${pct('TV·CORN').toFixed(0)}%)`);
+  ok(pct('TV·HELI') <= 85, `in clean air the heli may lead but must not own the feed (HELI ${pct('TV·HELI').toFixed(0)}%)`);
 }
 
 console.log(failures === 0 ? '\nALL DIRECTOR TESTS PASS' : `\n${failures} FAILURES`);

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { CAR } from '../vehicle/config.js';
 
 /**
  * Spectator cameras for AI-vs-AI race mode. The player watches the field and
@@ -7,15 +8,23 @@ import * as THREE from 'three';
  *   tv        a pure broadcast feed like an F1 TV channel, directed by a
  *             Q-learning agent: it is NOT locked to one car - every cut it
  *             picks both the shot and its own subject from the whole field.
- *             Actions: a long slowly-orbiting HELICOPTER pass on whoever is
- *             most interesting, a CORNER PTZ camera standing at the mast of
- *             the next corner the subject is about to take (fixed position,
- *             the head pans to follow the car through the corner while the
- *             lens zooms in at the apex and back out), a 1V1 close-up on
- *             the closest pair in the field (their battle), and a CRASH
- *             camera - a slow high heli pass over the incident - that
- *             pre-empts everything the moment a car goes off track (driver
- *             recover/reverse mode) and holds until it is cleared.
+ *             Actions: a long HELICOPTER pass that holds a rear-quarter
+ *             follow on whoever is most interesting (it swings between the
+ *             left and right rear quarters - never over the top, never in
+ *             front), a CORNER PTZ camera standing at the mast of the next
+ *             corner the subject is about to take (fixed position, the head
+ *             pans to follow the car through the corner while the lens
+ *             zooms in at the apex and back out), a 1V1 close-up on the
+ *             closest pair in the field (their battle), and a CRASH camera
+ *             - a low wide pass around the contact point - that pre-empts
+ *             everything the moment two car bodies touch (OBB contact on
+ *             the same cuboid as the physics colliders, with a small
+ *             lead-in margin) and holds while the cars are intertwined.
+ *             Shot selection is epsilon-greedy with a freshness bonus so
+ *             near-tie shots rotate instead of one dominating the feed;
+ *             the reward is rank-based (was the on-screen car the most
+ *             interesting in the field?) scaled by corner coverage, so the
+ *             table learns which shot type actually serves the moment.
  *             State: leader gap bucket x pack density around the leader
  *             (12 states). Reward per shot: how interesting the on-screen
  *             car was (rank, battle gaps, corner approaches, recency) plus
@@ -39,7 +48,7 @@ const MODES = ['tv', 'orbit', 'cinematic', 'drone'];
 const BASE_LABELS = { tv: 'TV', orbit: 'ORBIT', cinematic: 'CINEMATIC', drone: 'DRONE' };
 
 const TV_SHOTS = [
-  { name: 'HELI', fov: 55, dur: [12, 17] },
+  { name: 'HELI', fov: 55, dur: [9, 13] },
   { name: 'CORN', fov: 38, dur: [6, 9] },
   { name: '1V1', fov: 36, dur: [6, 8] },
   { name: 'CRASH', fov: 55, dur: [3, 6] },
@@ -64,6 +73,47 @@ const _trackRight = new THREE.Vector3();
 const _to = new THREE.Vector3();
 
 const wrap = (u) => ((u % 1) + 1) % 1;
+
+const _cQuatA = new THREE.Quaternion();
+const _cQuatB = new THREE.Quaternion();
+const _cFwdA = new THREE.Vector3();
+const _cFwdB = new THREE.Vector3();
+
+/**
+ * 2-D separating-axis distance between two car cuboids (XZ plane; every
+ * car is on the ground, so the Y overlap is a given). Positive = the
+ * bodies are apart by that many metres, negative = overlapping.
+ */
+function _obbSeparation(bodyA, bodyB, hx, hz) {
+  const pa = bodyA.translation();
+  const pb = bodyB.translation();
+  const qa = bodyA.rotation();
+  const qb = bodyB.rotation();
+  _cQuatA.set(qa.x, qa.y, qa.z, qa.w);
+  _cQuatB.set(qb.x, qb.y, qb.z, qb.w);
+  const fa = _cFwdA.set(0, 0, 1).applyQuaternion(_cQuatA);
+  const fb = _cFwdB.set(0, 0, 1).applyQuaternion(_cQuatB);
+  if (fa.lengthSq() < 1e-6) fa.set(0, 0, 1);
+  if (fb.lengthSq() < 1e-6) fb.set(0, 0, 1);
+  fa.normalize();
+  fb.normalize();
+  const dx = pb.x - pa.x;
+  const dz = pb.z - pa.z;
+  let best = -Infinity;
+  const testAxis = (ax, az) => {
+    const proj = dx * ax + dz * az;
+    // half-width of a cuboid along (ax, az): its right is (f.z, -f.x)
+    const wA = hx * Math.abs(fa.z * ax - fa.x * az) + hz * Math.abs(fa.x * ax + fa.z * az);
+    const wB = hx * Math.abs(fb.z * ax - fb.x * az) + hz * Math.abs(fb.x * ax + fb.z * az);
+    const sep = Math.abs(proj) - (wA + wB);
+    if (sep > best) best = sep;
+  };
+  testAxis(fa.x, fa.z);
+  testAxis(fa.z, -fa.x);
+  testAxis(fb.x, fb.z);
+  testAxis(fb.z, -fb.x);
+  return best;
+}
 
 export class SpectatorCamera {
   constructor(camera, canvas, track) {
@@ -123,6 +173,16 @@ export class SpectatorCamera {
     this._cornGen = -1;
     this._cornCorner = null; // the corner locked for the current shot
     this._dynFov = 0; // non-zero while the corner cam is driving the FOV
+    // freshness bonus: when each shot type was last on air
+    this._shotLastSeen = [-1e9, -1e9, -1e9];
+    // per-shot corner coverage (did the car actually drive through it)
+    this._shotCovSum = 0;
+    this._shotCovFrames = 0;
+    // crash: the contact point the incident camera orbits
+    this._crashPos = new THREE.Vector3();
+    this._crashPosSet = false;
+    // the situation-fit the current shot had when it was chosen
+    this._activeFit = 0.5;
     this._loadDirector();
 
     // cinematic
@@ -161,6 +221,9 @@ export class SpectatorCamera {
     this._pendA = null;
     this._shotSum = 0;
     this._shotFrames = 0;
+    this._shotCovSum = 0;
+    this._shotCovFrames = 0;
+    this._crashPosSet = false;
     this.cineShot = 0;
     this.cineT = 0;
     return this.mode;
@@ -342,21 +405,28 @@ export class SpectatorCamera {
   // ------------------------------------------------------------ TV shots
   _tvShot(dt, driver, focusCar) {
     // ------------------------------------------------ crash pre-emption
-    // the feed cuts to the incident the moment any car goes off track
-    // (driver recover/reverse mode) and holds until it is cleared
+    // a crash = two car bodies touching: OBB test on the same cuboid as
+    // the physics colliders, with a small lead-in margin so the cut lands
+    // on the moment of contact. Note the threshold is tight (0.6 m): a
+    // packed field running 6 m apart through a tight corner keeps its
+    // OBB separation above ~1.3 m, so normal racing never triggers it.
+    // The feed holds for 2 s after the contact ends, then hands back to
+    // the rotation
     let incident = null;
     const f = this._field;
-    if (f) {
-      for (let i = 0; i < f.length; i++) {
-        const d = f[i].driver;
-        if (d && (d.mode === 'recover' || d.mode === 'reverse')) {
-          if (!incident || (d.recoverTime || 0) > (incident.driver.recoverTime || 0)) incident = f[i];
-        }
-      }
-    }
+    const cp = this._contactPair();
+    if (cp && cp.sep < 0.6) incident = cp;
     if (incident) {
-      this._crashTarget = incident.car;
-      this._crashHold = Math.max(this._crashHold, 1.5);
+      // frame the contact point; orbit the more advanced car of the pair
+      const pa = f[incident.i].car.body.translation();
+      const pb = f[incident.j].car.body.translation();
+      this._crashPos.set((pa.x + pb.x) / 2, Math.max(pa.y, pb.y) + 0.7, (pa.z + pb.z) / 2);
+      this._crashPosSet = true;
+      const r = this._race;
+      let lead = incident.i;
+      if (r && Array.isArray(r.progress) && r.progress[incident.j] > r.progress[incident.i]) lead = incident.j;
+      this._crashTarget = f[lead].car;
+      this._crashHold = Math.max(this._crashHold, 2.0);
       if (this.shot !== 3) {
         this.shot = 3;
         this.initialised = false; // hard cut to the incident
@@ -367,6 +437,8 @@ export class SpectatorCamera {
         this._pendS = null;
         this._shotSum = 0;
         this._shotFrames = 0;
+        this._shotCovSum = 0;
+        this._shotCovFrames = 0;
       }
     } else {
       this._crashHold -= dt;
@@ -380,7 +452,9 @@ export class SpectatorCamera {
         this.initialised = false;
         this._shotGen++;
         this._crashTarget = null;
+        this._crashPosSet = false;
         this._subject = null; // re-seat a fresh subject for the heli pass
+        this._shotLastSeen[0] = this.time;
       } else {
         this._crashShot(dt);
         return;
@@ -393,36 +467,71 @@ export class SpectatorCamera {
       this._subject = this._pickSubject(this.shot, S, focusCar);
       this._seatSubject();
     }
-    // reward accumulation: how interesting is the car on screen right now
+    // reward accumulation: was the on-screen car the one the field was
+    // talking about? rank 0 (top interest) pays full, lower ranks less.
+    // a corner cam also only pays if the car actually drives through it
     if (S && this._subject) {
-      this._shotSum += S.interests.get(this._subject) || 0;
+      const it = S.interests.get(this._subject) || 0;
+      let rank = 0;
+      for (let i = 0; i < f.length; i++) {
+        if ((S.interests.get(f[i].car) || 0) > it) rank++;
+      }
+      this._shotSum += rank === 0 ? 1 : rank === 1 ? 0.7 : rank === 2 ? 0.45 : 0.25;
       this._shotFrames++;
+      if (this.shot === 1 && this._cornCorner) {
+        const tp = this._subject.body ? this._subject.body.translation() : null;
+        let cov = 0;
+        if (tp) {
+          this.track.curve.getPointAt(this._cornCorner.u, _trackPos);
+          cov = Math.hypot(tp.x - _trackPos.x, tp.z - _trackPos.z) < 110 ? 1 : 0;
+        }
+        this._shotCovSum += cov;
+      } else {
+        this._shotCovSum += 1;
+      }
+      this._shotCovFrames++;
     }
     this.shotTimer -= dt;
     if (this.shotTimer <= 0) {
       let next;
+      const fit = this._shotFit(S);
       if (S) {
         const s = S.state;
-        // reward of the shot that just ended: average on-screen interest,
-        // plus subject novelty, minus back-to-back same-camera repeats
+        // reward of the shot that just ended: rank-based on-screen value
+        // plus the situation-fit it had when chosen, plus subject novelty,
+        // minus back-to-back same-camera repeats; centered by 0.5 so the
+        // table stores an advantage, not a running total
         const avg = this._shotFrames ? this._shotSum / this._shotFrames : 0;
+        const cov = this._shotCovFrames ? this._shotCovSum / this._shotCovFrames : 1;
         const r =
-          avg +
+          0.5 * avg * (0.4 + 0.6 * cov) + 0.5 * this._activeFit +
           (this._subject && this._prevSubject && this._subject !== this._prevSubject ? 0.15 : 0) -
-          (this._prevShot >= 0 && this.shot === this._prevShot ? 0.3 : 0);
+          (this._prevShot >= 0 && this.shot === this._prevShot ? 0.3 : 0) - 0.5;
         // Q-update for the decision taken at the previous cut
         if (this._pendA !== null && this._pendS !== null) {
           const idx = this._pendS * 3 + this._pendA;
           let maxQ = -Infinity;
           for (let b = 0; b < 3; b++) maxQ = Math.max(maxQ, this.Q[s * 3 + b]);
-          this.Q[idx] = Math.max(-2, Math.min(3, this.Q[idx] + 0.06 * (r + 0.9 * maxQ - this.Q[idx])));
+          // gamma 0.5 keeps the converged values (≈2x the reward) inside
+          // the clamp so the table's argmax still reflects the ranking
+          this.Q[idx] = Math.max(-1.1, Math.min(1.1, this.Q[idx] + 0.08 * (r + 0.5 * maxQ - this.Q[idx])));
         }
-        // epsilon-greedy on the current state
+        // pick: situation fit first, the learned table as a modifier,
+        // freshness so near-ties rotate instead of looping
         if (Math.random() < this.qEps) {
           next = (Math.random() * 3) | 0;
         } else {
           next = 0;
-          for (let b = 1; b < 3; b++) if (this.Q[s * 3 + b] > this.Q[s * 3 + next]) next = b;
+          let bestScore =
+            fit[0] + 0.5 * this.Q[s * 3] + 0.4 * THREE.MathUtils.clamp((this.time - this._shotLastSeen[0]) / 30, 0, 1);
+          for (let b = 1; b < 3; b++) {
+            const score =
+              fit[b] + 0.5 * this.Q[s * 3 + b] + 0.4 * THREE.MathUtils.clamp((this.time - this._shotLastSeen[b]) / 30, 0, 1);
+            if (score > bestScore) {
+              bestScore = score;
+              next = b;
+            }
+          }
         }
         this.qEps = Math.max(0.03, this.qEps * 0.9985);
         this._pendS = s;
@@ -437,6 +546,7 @@ export class SpectatorCamera {
       this._prevSubject = this._subject;
       this._prevShot = this.shot;
       this.shot = next;
+      this._activeFit = fit[next];
       const d = TV_SHOTS[next].dur;
       this.shotTimer = d[0] + Math.random() * (d[1] - d[0]);
       // new subject for the new shot - picked by the director, not the X key
@@ -444,8 +554,11 @@ export class SpectatorCamera {
       this._seatSubject();
       this.initialised = false; // hard cut, like a real broadcast
       this._shotGen++;
+      this._shotLastSeen[next] = this.time;
       this._shotSum = 0;
       this._shotFrames = 0;
+      this._shotCovSum = 0;
+      this._shotCovFrames = 0;
     }
     if (this.shot === 0) {
       // heli: high, slowly orbiting around its subject, wide angle
@@ -511,7 +624,7 @@ export class SpectatorCamera {
       const last = this._seen.get(e.car);
       if (last !== undefined) {
         const age = now - last;
-        if (age < 12) it -= 0.5 * Math.exp(-age / 8);
+        if (age < 20) it -= 0.5 * Math.exp(-age / 10);
       }
       interests.set(e.car, Math.max(0.05, Math.min(1.5, it)));
     }
@@ -590,12 +703,13 @@ export class SpectatorCamera {
     return this._subjectEntry && this._subjectEntry.driver ? this._subjectEntry.driver.u : 0;
   }
 
-  _subjectPose() {
-    // point the shared pose scratch at the current subject, not the focus car
-    const car = this._subject || this._focus;
-    if (!car) return;
-    const t = car.body.translation();
-    const q = car.body.rotation();
+  _subjectPose(car) {
+    // point the shared pose scratch at the given car, or the current
+    // subject, or the focus car
+    const c = car || this._subject || this._focus;
+    if (!c) return;
+    const t = c.body.translation();
+    const q = c.body.rotation();
     _camQuat.set(q.x, q.y, q.z, q.w);
     _fwd.set(0, 0, 1).applyQuaternion(_camQuat);
     _fwd.y = 0;
@@ -604,11 +718,13 @@ export class SpectatorCamera {
     _center.set(t.x, t.y + 0.7, t.z);
   }
 
+
+
   _loadDirector() {
     // the director remembers what it learned between sessions
     try {
       if (typeof localStorage === 'undefined') return;
-      const raw = localStorage.getItem('race3d-qdirector-v1');
+      const raw = localStorage.getItem('race3d-qdirector-v2');
       if (!raw) return;
       const d = JSON.parse(raw);
       if (Array.isArray(d.q) && d.q.length === 36) {
@@ -627,16 +743,16 @@ export class SpectatorCamera {
   _saveDirector() {
     try {
       if (typeof localStorage === 'undefined') return;
-      localStorage.setItem('race3d-qdirector-v1', JSON.stringify({ v: 1, q: Array.from(this.Q), e: this.qEps }));
+      localStorage.setItem('race3d-qdirector-v2', JSON.stringify({ v: 2, q: Array.from(this.Q), e: this.qEps }));
     } catch {
       /* storage unavailable - learning is still in-memory */
     }
   }
 
   _crashShot(dt) {
-    // the incident cam is a slow high heli pass over the crashed car -
-    // same framing as the heli shot, wider orbit, no lead (the car may be
-    // stalled or reversing)
+    // incident coverage: a low, wide pass around the contact point - both
+    // cars stay in frame and the cam reads as a side-rear follow, never
+    // hovering straight over the wreckage
     const target =
       this._crashTarget && this._crashTarget.body
         ? this._crashTarget
@@ -645,15 +761,18 @@ export class SpectatorCamera {
           : this._focus;
     if (!target) return;
     this._subjectPose(target);
+    if (this._crashPosSet) {
+      _center.set(this._crashPos.x, this._crashPos.y, this._crashPos.z);
+    }
     const t = this.time;
     const ang = t * 0.16 + this.drift + 2.1; // slow orbit, offset from the heli
-    const r = 21 + 2 * Math.sin(t * 0.14);
+    const r = 24 + 2.2 * Math.sin(t * 0.14);
     _right.set(_fwd.z, 0, -_fwd.x);
     _desired
       .copy(_center)
       .addScaledVector(_right, Math.cos(ang) * r)
       .addScaledVector(_fwd, Math.sin(ang) * r);
-    _desired.y = _center.y + 23 + 2.2 * Math.sin(t * 0.13);
+    _desired.y = _center.y + 16 + 1.2 * Math.sin(t * 0.13);
     _look.copy(_center);
     this._setDamp(1.1, 1.6);
   }
@@ -748,6 +867,83 @@ export class SpectatorCamera {
 
   // ---- corner detection: merge curvature peaks of the AI line into the
   // biggest corners, cached for the whole session (static per track).
+  // closest pair of car bodies in the field: { i, j, sep } with sep in m
+  // (negative = the bodies are overlapping). O(n^2) over 11 cars is cheap.
+  _contactPair() {
+    const f = this._field;
+    if (!f || f.length < 2) return null;
+    const hx = CAR.halfExtents.x;
+    const hz = CAR.halfExtents.z;
+    let best = null;
+    let bestSep = Infinity;
+    for (let i = 0; i < f.length; i++) {
+      for (let j = i + 1; j < f.length; j++) {
+        const sep = _obbSeparation(f[i].car.body, f[j].car.body, hx, hz);
+        if (sep < bestSep) {
+          bestSep = sep;
+          best = { i, j, sep };
+          if (sep < 0.1) break; // touching already - a closer pair won't change the cut
+        }
+      }
+    }
+    return best;
+  }
+
+  // ------------------------------------------------- situation fit
+  // how well each shot type serves the current moment, 0..1. This is the
+  // play-by-play signal: a battle is a 1V1 story, the last moments before
+  // a corner are a CORN story, and a car running in clean air is exactly
+  // what the HELI follow was made for. The Q table refines this over time
+  // but can't fight it by more than half a point.
+  _shotFit(S) {
+    const fit = [0.5, 0.35, 0.3]; // neutral when there is no field data
+    if (!S || !this._race || !Array.isArray(this._race.progress)) return fit;
+    const f = this._field;
+    const n = f.length;
+    if (n < 2) return fit;
+    const L = this.track.length;
+    // closest pair in the field + how interesting that pair is
+    let gap = Infinity;
+    let pairIt = 0;
+    for (let i = 0; i < n; i++) {
+      const A = S.order[i];
+      const B = S.order[(i + 1) % n];
+      let g = (this._race.progress[A] - this._race.progress[B]) * L;
+      if (g <= 0) g += L;
+      if (g < gap) {
+        gap = g;
+        pairIt = Math.max(S.interests.get(f[A].car) || 0, S.interests.get(f[B].car) || 0);
+      }
+    }
+    // corner approach: how close is the subject to its next corner
+    const u = this._subject ? this._subjectU() : 0;
+    let dCorner = Infinity;
+    const corners = this._ensureCorners();
+    for (let i = 0; i < corners.length; i++) {
+      const d = wrap(corners[i].u - u) * L;
+      if (d < dCorner) dCorner = d;
+    }
+    // battle
+    if (gap < 8) {
+      fit[2] = THREE.MathUtils.clamp(pairIt / 1.2, 0.5, 1);
+      fit[0] = 0.35;
+    } else if (gap < 25) {
+      fit[2] = 0.7 * THREE.MathUtils.clamp(pairIt / 1.2, 0.5, 1);
+      fit[0] = 0.5;
+    }
+    // corner approach
+    if (dCorner < 45) {
+      fit[1] = 0.95;
+      fit[0] = Math.min(fit[0], 0.4);
+      fit[2] = Math.min(fit[2], 0.55);
+    } else if (dCorner < 90) {
+      fit[1] = Math.max(fit[1], 0.5);
+    }
+    // clean air: this is the heli's job
+    if (gap >= 25 && dCorner >= 90) fit[0] = 1.0;
+    return fit;
+  }
+
   _ensureCorners() {
     if (this._corners) return this._corners;
     // layout-derived: one camera slot at EVERY designed corner (both
@@ -876,17 +1072,21 @@ export class SpectatorCamera {
   }
 
   _heliShot() {
+    // the broadcast heli: a rear-quarter follow. It swings between the
+    // left and right rear quarters (always at least ~18 m behind the car
+    // centre, 30-40 deg above the track) - never over the top, never in
+    // front of the car
     const t = this.time;
-    const ang = t * 0.24 + this.drift; // one slow orbit every ~26 s
-    const r = 18 + 1.6 * Math.sin(t * 0.19);
+    const ang = Math.PI + 0.85 * Math.sin(t * 0.21 + this.drift);
+    const r = 21 + 2 * Math.sin(t * 0.17);
     _right.set(_fwd.z, 0, -_fwd.x);
     _desired
       .copy(_center)
       .addScaledVector(_right, Math.cos(ang) * r)
       .addScaledVector(_fwd, Math.sin(ang) * r);
-    _desired.y = _center.y + 21 + 2.2 * Math.sin(t * 0.16);
+    _desired.y = _center.y + 14 + 1.8 * Math.sin(t * 0.15);
     // lead the car a bit so it sits in the lower third of the frame
-    _look.copy(_center).addScaledVector(_fwd, 9);
+    _look.copy(_center).addScaledVector(_fwd, 7);
     this._setDamp(1.2, 1.8);
   }
 
