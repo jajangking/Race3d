@@ -9,14 +9,14 @@ import * as THREE from 'three';
  *    long main straight, heavy right T1, left T2, S-chicane, left hairpin,
  *    long flowing right back into the straight.
  *
- *  RALLYCROSS - a short (~1.5 km) EXTREME corner-gauntlet circuit with TWO
- *    gravel sections (low grip) mixed into the tarmac, the way real
- *    rallycross tracks are built: 90-degree sweeper, full 180-degree gravel
- *    hairpin, a three-hit gravel chicane (right-left-left), two more sharp
- *    90-degree hits, and a long flowing left back to the home straight.
- *    Control points are placed every ~30 m (including dense arc points in
- *    the corners) so the Catmull-Rom spline cannot kink; effective corner
- *    radii come out 14-25 m.
+ *  RALLYCROSS - a ~1.75 km EXTREME corner-gauntlet circuit with TWO gravel
+ *    sections (low grip) mixed into the tarmac: 13 real corners with
+ *    effective radii of only 10.6-16.9 m — a sharp 90 T1, a full 180-degree
+ *    GRAVEL hairpin, a four-hit GRAVEL chicane, a sharp 90, an S-bend GRAVEL
+ *    bump on the west leg, and a T5/T6/T7 left-foot flow back to the home
+ *    straight. Control points are placed every ~15-46 m (arc points inside
+ *    the corners, short lead-in/lead-out segments at every corner junction)
+ *    so the Catmull-Rom spline cannot kink.
  *
  * The control points are also consumed by the headless AI scripts, so the
  * sim tests always run the exact same layout as the game.
@@ -50,73 +50,94 @@ const CIRCUIT_PTS = [
 ];
 
 const RALLY_PTS = [
-  // ------------------------------------------------ start/finish straight
-  // (u = 0). The straight flows gently east so the 60 m grid and the
-  // corner-exit ramp feed into it without a kink.
-  new THREE.Vector3(-140, 0, 145), //  0 A: u = 0 (start line)
-  new THREE.Vector3(-110, 0, 152), //  1
-  new THREE.Vector3( -75, 0, 157), //  2
-  new THREE.Vector3( -35, 0, 160), //  3
-  new THREE.Vector3(   5, 0, 161), //  4
-  new THREE.Vector3(  45, 0, 162), //  5
-  new THREE.Vector3(  85, 0, 162), //  6
-  new THREE.Vector3( 125, 0, 162), //  7
-  new THREE.Vector3( 165, 0, 162), //  8 C: end of the straight
-  // ------------------------------------------------ T1 (sharp 90, R 35)
-  new THREE.Vector3( 189.7, 0, 151.8), //  9 T1 arc (R35, centre 165/127)
-  new THREE.Vector3( 200, 0, 127), // 10 T1 exit, now heading north
+  // ------------------------------------------------ home straight (flows gently so the grid + corner exit feed in)
+new THREE.Vector3( -241.00, 0,  268.0), //  0 A: u = 0 (start line)
+new THREE.Vector3( -218.00, 0,  265.7), //  1
+new THREE.Vector3( -173.00, 0,  261.7), //  2
+new THREE.Vector3( -128.00, 0,  258.4), //  3
+new THREE.Vector3(  -83.00, 0,  255.9), //  4
+new THREE.Vector3(  -38.00, 0,  255.0), //  5
+new THREE.Vector3(    7.00, 0,  255.0), //  6
+new THREE.Vector3(   47.00, 0,  255.0), //  7
+new THREE.Vector3(   87.00, 0,  255.0), //  8
+new THREE.Vector3(  122.00, 0,  255.0), //  9
+new THREE.Vector3(  147.00, 0,  255.0), // 10
+new THREE.Vector3(  165.00, 0,  255.0), // 11 T1 entry
+  // ------------------------------------------------ T1 (sharp 90 left, R24) off the home straight
+new THREE.Vector3(  181.97, 0,  248.0), // 12 T1 arc (R24, 90 left)
+new THREE.Vector3(  189.00, 0,  231.0), // 13 T1 exit, heading north
   // ------------------------------------------------ right straight (north)
-  new THREE.Vector3( 200, 0, 90), // 11
-  new THREE.Vector3( 200, 0, 55), // 12
-  new THREE.Vector3( 200, 0, 20), // 13
-  new THREE.Vector3( 200, 0, -15), // 14
-  new THREE.Vector3( 200, 0, -50), // 15
-  new THREE.Vector3( 200, 0, -85), // 16
-  new THREE.Vector3( 200, 0, -115), // 17
-  // ------------------------------------------------ T2 (full 180 hairpin, R 32,
-  // GRAVEL): north in, loop the top, south out
-  new THREE.Vector3( 200, 0, -140), // 18 T2 entry
-  new THREE.Vector3( 190.6, 0, -162.6), // 19 T2 arc 45deg
-  new THREE.Vector3( 168, 0, -172), // 20 T2 apex
-  new THREE.Vector3( 145.4, 0, -162.6), // 21 T2 arc 135deg
-  new THREE.Vector3( 136, 0, -140), // 22 T2 exit, heading south
-  // ------------------------------------------------ south straight + T3 (sharp
-  // 90 right, R 30, GRAVEL)
-  new THREE.Vector3( 136, 0, -105), // 23
-  new THREE.Vector3( 136, 0, -70), // 24 T3 entry
-  new THREE.Vector3( 127.2, 0, -48.8), // 25 T3 arc (R30, centre 106/-70)
-  new THREE.Vector3( 106, 0, -40), // 26 T3 exit, heading west
-  // ------------------------------------------------ short tarmac island, then
-  // the GRAVEL CHICANE: T3b (90 right) - T3c (90 left), hit hard
-  new THREE.Vector3( 80, 0, -40), // 27
-  new THREE.Vector3( 55, 0, -40), // 28
-  new THREE.Vector3( 30, 0, -40), // 29 T3b entry
-  new THREE.Vector3( 8.8, 0, -48.8), // 30 T3b arc (R30, centre 30/-70)
-  new THREE.Vector3( 0, 0, -70), // 31 T3b exit, heading north
-  new THREE.Vector3( 0, 0, -87), // 32
-  new THREE.Vector3( 0, 0, -105), // 33 T3c entry
-  new THREE.Vector3(-8.8, 0, -126.2), // 34 T3c arc (R30, centre -30/-105)
-  new THREE.Vector3(-30, 0, -135), // 35 T3c exit, heading west
-  // ------------------------------------------------ west leg + T4 (sharp 90
-  // left, R 30) onto the long left straight
-  new THREE.Vector3(-63, 0, -135), // 36
-  new THREE.Vector3(-96, 0, -135), // 37
-  new THREE.Vector3(-129, 0, -135), // 38
-  new THREE.Vector3(-155, 0, -135), // 39 T4 entry
-  new THREE.Vector3(-176.2, 0, -126.2), // 40 T4 arc (R30, centre -155/-105)
-  new THREE.Vector3(-185, 0, -105), // 41 T4 exit, heading south
-  // ------------------------------------------------ long left straight (south)
-  new THREE.Vector3(-186, 0, -70), // 42
-  new THREE.Vector3(-188, 0, -35), // 43
-  new THREE.Vector3(-190, 0, 0), // 44
-  new THREE.Vector3(-192, 0, 35), // 45
-  new THREE.Vector3(-194, 0, 70), // 46
-  new THREE.Vector3(-196, 0, 105), // 47 T5 entry
-  // ------------------------------------------------ T5 (sharp 90 left, R 30)
-  // flowing back into the home straight
-  new THREE.Vector3(-187.2, 0, 126.2), // 48 T5 arc (R30, centre -166/105)
-  new THREE.Vector3(-166, 0, 135), // 49 T5 exit, heading east -> A
+new THREE.Vector3(  189.00, 0,  206.0), // 14
+new THREE.Vector3(  189.00, 0,  166.0), // 15
+new THREE.Vector3(  189.00, 0,  126.0), // 16
+new THREE.Vector3(  189.00, 0,   86.0), // 17
+new THREE.Vector3(  189.00, 0,   70.0), // 18
+new THREE.Vector3(  189.00, 0,   45.0), // 19
+  // ------------------------------------------------ T2: the 180-DEGREE GRAVEL HAIRPIN (R30)
+new THREE.Vector3(  180.21, 0,   23.8), // 20 T2 hairpin arc start (R30, 180 left)
+new THREE.Vector3(  159.00, 0,   15.0), // 21
+new THREE.Vector3(  137.79, 0,   23.8), // 22
+new THREE.Vector3(  129.00, 0,   45.0), // 23 T2 exit, heading south
+  // ------------------------------------------------ right leg (south)
+new THREE.Vector3(  129.00, 0,   68.0), // 24
+new THREE.Vector3(  129.00, 0,   90.0), // 25
+new THREE.Vector3(  129.00, 0,  112.0), // 26
+  // ------------------------------------------------ T3 (sharp 90 right, R24)
+new THREE.Vector3(  121.97, 0,  129.0), // 27 T3 arc (R24, 90 right)
+new THREE.Vector3(  105.00, 0,  136.0), // 28 T3 exit -> chicane
+  // ------------------------------------------------ the FOUR-HIT GRAVEL CHICANE: T4a - T4b - T4c - T4d (all R24)
+new THREE.Vector3(   88.03, 0,  143.0), // 29 T4a arc (R24, 90 left)
+new THREE.Vector3(   81.00, 0,  160.0), // 30
+new THREE.Vector3(   81.00, 0,  178.0), // 31 chicane leg
+new THREE.Vector3(   81.00, 0,  196.0), // 32
+new THREE.Vector3(   73.97, 0,  213.0), // 33 T4b arc (R24, 90 right)
+new THREE.Vector3(   57.00, 0,  220.0), // 34
+new THREE.Vector3(   40.00, 0,  220.0), // 35 chicane leg
+new THREE.Vector3(   21.00, 0,  220.0), // 36
+new THREE.Vector3(    4.03, 0,  213.0), // 37 T4c arc (R24, 90 right)
+new THREE.Vector3(   -3.00, 0,  196.0), // 38
+new THREE.Vector3(   -3.00, 0,  178.0), // 39 chicane leg
+new THREE.Vector3(   -3.00, 0,  160.0), // 40
+new THREE.Vector3(  -10.03, 0,  143.0), // 41 T4d arc (R24, 90 left)
+new THREE.Vector3(  -27.00, 0,  136.0), // 42 chicane exit, west leg
+  // ------------------------------------------------ west leg
+new THREE.Vector3(  -50.00, 0,  136.0), // 43
+new THREE.Vector3(  -95.00, 0,  136.0), // 44
+new THREE.Vector3( -140.00, 0,  136.0), // 45
+new THREE.Vector3( -183.00, 0,  136.0), // 46
+new THREE.Vector3( -207.00, 0,  136.0), // 47
+  // ------------------------------------------------ the S-BEND BUMP (GRAVEL): S1 + S2 (R24)
+new THREE.Vector3( -223.97, 0,  143.0), // 48 S1 arc (R24, 90 left)
+new THREE.Vector3( -231.00, 0,  160.0), // 49
+new THREE.Vector3( -231.00, 0,  178.0), // 50 S-bend leg
+new THREE.Vector3( -231.00, 0,  196.0), // 51
+new THREE.Vector3( -238.03, 0,  213.0), // 52 S2 arc (R24, 90 right)
+new THREE.Vector3( -255.00, 0,  220.0), // 53 S-bend exit, west leg 2
+  // ------------------------------------------------ west leg 2
+new THREE.Vector3( -285.00, 0,  220.0), // 54
+new THREE.Vector3( -315.00, 0,  220.0), // 55
+new THREE.Vector3( -335.00, 0,  220.0), // 56
+new THREE.Vector3( -351.00, 0,  220.0), // 57
+  // ------------------------------------------------ T5 (sharp 90 left, R24)
+new THREE.Vector3( -367.97, 0,  227.0), // 58 T5 arc (R24, 90 left)
+new THREE.Vector3( -375.00, 0,  244.0), // 59 T5 exit, left leg
+  // ------------------------------------------------ left leg (south)
+new THREE.Vector3( -375.00, 0,  268.0), // 60
+new THREE.Vector3( -375.00, 0,  288.0), // 61
+new THREE.Vector3( -375.00, 0,  308.0), // 62
+  // ------------------------------------------------ T6 (sharp 90 left, R24)
+new THREE.Vector3( -367.97, 0,  325.0), // 63 T6 arc (R24, 90 left)
+new THREE.Vector3( -351.00, 0,  332.0), // 64 T6 exit, east leg
+  // ------------------------------------------------ east leg
+new THREE.Vector3( -328.00, 0,  332.0), // 65
+new THREE.Vector3( -305.00, 0,  332.0), // 66
+  // ------------------------------------------------ T7 (sharp 90 left, R24)
+new THREE.Vector3( -288.03, 0,  325.0), // 67 T7 arc (R24, 90 left)
+new THREE.Vector3( -281.00, 0,  308.0), // 68 T7 exit
+  // ------------------------------------------------ F1: flowing right (R40) back onto the home straight
+new THREE.Vector3( -269.28, 0,  279.7), // 69 F1 flow arc (R40, 90 right) -> closes at A
 ];
+
 
 export function buildTrackCurve() {
   return new THREE.CatmullRomCurve3(CIRCUIT_PTS, true, 'catmullrom', 0.5);
@@ -216,11 +237,12 @@ export const TRACKS = {
     'RALLYCROSS',
     buildRallyCurve(),
     RALLY_PTS,
-    // zone 1: the gravel hairpin + T3 (mid right straight -> mid T3 exit)
-    // zone 2: the gravel chicane T3b + T3c (mid island -> mid west leg)
+    // zone 1: the GRAVEL HAIRPIN + right leg + T3 + four-hit chicane
+    //         (T2 entry idx19 -> T4d exit idx42)
+    // zone 2: the S-BEND GRAVEL BUMP on the west leg (S1 + S2, idx48-53)
     [
-      [17.5, 26.5],
-      [28.5, 35.5],
+      [19, 42],
+      [48, 53],
     ],
   ),
 };

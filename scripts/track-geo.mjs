@@ -120,7 +120,8 @@ if (!arg) {
   const data = JSON.parse(readFileSync(arg, 'utf8'));
   for (const [name, def] of Object.entries(data)) {
     const pts = def.pts.map(([x, z]) => new THREE.Vector3(x, 0, z));
-    const curve = new THREE.CatmullRomCurve3(pts, true, 'catmullrom', 0.5);
+    const ct = def.curveType || 'catmullrom';
+    const curve = ct === 'centripetal' ? new THREE.CatmullRomCurve3(pts, true, 'centripetal') : new THREE.CatmullRomCurve3(pts, true, 'catmullrom', 0.5);
     analyze(name, curve);
   }
 }
