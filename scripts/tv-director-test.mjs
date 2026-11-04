@@ -300,10 +300,10 @@ console.log('C: crash pre-emption regression (high-value contact)');
     if (!isFinite(p.x + p.y + p.z) || p.y < -1 || p.y > 90) bad++;
   }
   ok(bad === 0, `0 bad frames (got ${bad})`);
-  // deterministic timing: the opening HELI shot holds its 12 s timer, so
-  // the first decision after the contact (t=10) lands at the t=12
-  // boundary - pre-emption then fires on the very next frame
-  ok(cutAt !== null && cutAt >= 11.9 && cutAt < 12.2,
+  // deterministic timing: the opening HELI shot holds its 14 s timer, so
+  // at the contact (t=10) its remaining 4 s is above the 2.5 s gate -
+  // the pre-emption cuts on the very next frame, mid-shot
+  ok(cutAt !== null && cutAt >= 9.9 && cutAt < 10.3,
     `cuts to CRASH promptly on the contact (t=${cutAt === null ? 'never' : cutAt.toFixed(2)})`);
   // while the contact is live (until t=18) the timer is refreshed to
   // 1.5 s, so release is at t=18+1.5 = 19.5 - no hard hang

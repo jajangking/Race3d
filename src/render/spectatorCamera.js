@@ -56,10 +56,10 @@ const MODES = ['tv', 'orbit', 'cinematic', 'drone'];
 const BASE_LABELS = { tv: 'TV', orbit: 'ORBIT', cinematic: 'CINEMATIC', drone: 'DRONE' };
 
 const TV_SHOTS = [
-  { name: 'HELI', fov: 48, dur: [9, 13] },
-  { name: 'CORN', fov: 38, dur: [6, 9] },
-  { name: '1V1', fov: 36, dur: [6, 8] },
-  { name: 'CRASH', fov: 55, dur: [3, 5] },
+  { name: 'HELI', fov: 48, dur: [12, 16] },
+  { name: 'CORN', fov: 38, dur: [8, 12] },
+  { name: '1V1', fov: 36, dur: [8, 12] },
+  { name: 'CRASH', fov: 55, dur: [4, 6] },
 ];
 
 const CINE_SHOTS = [
@@ -81,6 +81,8 @@ const _trackRight = new THREE.Vector3();
 const _to = new THREE.Vector3();
 const _anchorPos = new THREE.Vector3();
 const _anchorLook = new THREE.Vector3();
+const _heliHoldPos = new THREE.Vector3();
+const _heliHoldLook = new THREE.Vector3();
 const _tA = new THREE.Vector3();
 const _orbitDir = new THREE.Vector3();
 
@@ -146,7 +148,7 @@ export class SpectatorCamera {
 
     // tv director (broadcast feed: HELI / CORN / 1V1 / CRASH)
     this.shot = 0;
-    this.shotTimer = 12;
+    this.shotTimer = 14;
     this._focus = null;
     this._shotGen = 0; // bumped on every hard cut
     this._field = null;
@@ -205,6 +207,8 @@ export class SpectatorCamera {
     this.helics = null;
     // per-frame anchors for the helicopters (main.js flies them to these)
     this.tvHeli = null; // { pos, look } while the HELI shot is live
+    this.tvHeliHold = null; // { pos, look } standby anchor while the feed is elsewhere
+    this._heliHoldEntry = null; // the field entry the heli holds over while waiting
     this.tvCrash = null; // { pos, look } while the CRASH shot is live
     // the incident heli's circle angle (slow, continuous)
     this._crashAng = 0;
@@ -248,7 +252,7 @@ export class SpectatorCamera {
     // re-centre on mode change so the new framing arrives instantly
     this.initialised = false;
     this.shot = 0;
-    this.shotTimer = 12;
+    this.shotTimer = 14;
     this._shotGen++;
     this._crashTarget = null;
     this._subject = null;
@@ -376,6 +380,7 @@ export class SpectatorCamera {
       this.tvHeli = null;
       this.tvCrash = null;
     }
+    if (!Array.isArray(field) || !field.length) this._heliHoldEntry = null;
     // in TV mode the Q-director owns the subject, so a focus change
     // (lead change / X key) must not re-seat the camera; the other modes
     // still snap on re-focus
@@ -463,7 +468,23 @@ export class SpectatorCamera {
   _tvShot(dt, driver, focusCar) {
     // per-frame helicopter anchors (set by the live shot, cleared here)
     this.tvHeli = null;
+    this.tvHeliHold = null;
     this.tvCrash = null;
+    // heli standby: while the feed is on another camera, the chopper
+    // keeps flying the anchor of its last broadcast car (a real heli
+    // holds station over its target and waits) - the next HELI cut
+    // opens with the framing already established, no long transit
+    // across the field
+    if (
+      this.shot !== 0 &&
+      this._heliHoldEntry &&
+      this._heliHoldEntry.car &&
+      this._heliHoldEntry.driver
+    ) {
+      this._subjectPose(this._heliHoldEntry.car);
+      this._heliAnchor(this._heliHoldEntry, dt, _heliHoldPos, _heliHoldLook);
+      this.tvHeliHold = { pos: _heliHoldPos, look: _heliHoldLook };
+    }
     // ------------------------------------------------ the Q-learning cut
     const f = this._field;
     const S = this._scene();
@@ -501,7 +522,7 @@ export class SpectatorCamera {
       this._prevSubject = this._subject;
       this._prevShot = this.shot;
       this.shot = 3;
-      this.shotTimer = 3 + Math.random() * 2;
+      this.shotTimer = 4 + Math.random() * 2;
       this.initialised = false; // hard cut to the incident
       this._shotGen++;
       this._crashCoolUntil = this.time + 14;
@@ -541,6 +562,7 @@ export class SpectatorCamera {
       // first frame in TV: seat the subject for the opening shot (no cut)
       this._subject = this._pickSubject(this.shot, S, focusCar);
       this._seatSubject();
+      if (this.shot === 0) this._heliHoldEntry = this._subjectEntry;
     }
     // reward accumulation: was the on-screen car the one the field was
     // talking about? rank 0 (top interest) pays full, lower ranks less.
@@ -642,6 +664,7 @@ export class SpectatorCamera {
       // new subject for the new shot - picked by the director, not the X key
       this._subject = S ? this._pickSubject(next, S, focusCar) : focusCar;
       this._seatSubject();
+      if (next === 0) this._heliHoldEntry = this._subjectEntry;
       this.initialised = false; // hard cut, like a real broadcast
       this._shotGen++;
       this._shotLastSeen[next] = this.time;
@@ -760,7 +783,14 @@ export class SpectatorCamera {
       }
       return pairs[0].car;
     }
-    // HELI / CORN: whoever is most interesting right now
+    // HELI / CORN: whoever is most interesting right now. The HELI is
+    // also limited by reach: the chopper frames cars near where it is
+    // holding (distance softens the interest score), so every HELI cut
+    // opens tight instead of panning across the whole field; if every
+    // candidate is still cooling it frames the closest car to it - a
+    // broadcast shows what is under the heli, not a car across the map
+    const hold = this._heliHoldEntry;
+    const hp = a === 0 && hold && hold.car && hold.car.body ? hold.car.body.translation() : null;
     let best = -Infinity;
     let bestCar = null;
     let fb = -Infinity;
@@ -772,12 +802,30 @@ export class SpectatorCamera {
         fb = it;
         fbCar = car;
       }
-      if (!cooling(car) && it > best) {
-        best = it;
+      const cp = car.body.translation();
+      const score = hp ? it - Math.hypot(cp.x - hp.x, cp.z - hp.z) * 0.002 : it;
+      if (!cooling(car) && score > best) {
+        best = score;
         bestCar = car;
       }
     }
-    return bestCar || fbCar || focusCar;
+    if (bestCar) return bestCar;
+    if (hp) {
+      // all cooling: frame the car under the heli (interest breaks ties)
+      let d = Infinity;
+      let near = null;
+      for (let i = 0; i < f.length; i++) {
+        const car = f[i].car;
+        const cp = car.body.translation();
+        const dd = Math.hypot(cp.x - hp.x, cp.z - hp.z) - (S.interests.get(car) || 0) * 20;
+        if (dd < d) {
+          d = dd;
+          near = car;
+        }
+      }
+      if (near) return near;
+    }
+    return fbCar || focusCar;
   }
 
   _seatSubject() {
@@ -1169,26 +1217,25 @@ export class SpectatorCamera {
     this._setDamp(3.2, 4);
   }
 
-  _heliShot(dt) {
+  _heliAnchor(entry, dt, outPos, outLook) {
     // the broadcast heli's anchor: a LOCKED rear-quarter framing - 22 m
     // BEHIND THE SUBJECT'S TRACK POSITION (along the racing arc, not a
     // trailing arm - on a tight corner a trailing arm whips fast, an arc
     // point moves with the car at the same speed) - 12 m up (~28 deg
     // below horizontal, a classic broadcast follow, not overhead, not
     // nose-down), with a very slow side sway (about a 45 s period) so the
-    // framing stays stable and the heli's flight is calm. The shot is
-    // locked for its whole duration; it only changes when the director
-    // cuts.
+    // framing stays stable and the heli's flight is calm. Shared by the
+    // live HELI shot and the off-air standby hold.
     this._heliSway += dt;
-    const uB = wrap(this._subjectU() - 22 / this.track.length);
-    this.track.curve.getPointAt(uB, _anchorPos);
+    const uB = wrap(entry.driver.u - 22 / this.track.length);
+    this.track.curve.getPointAt(uB, outPos);
     this.track.curve.getTangentAt(uB, _tA);
     _tA.y = 0;
     _tA.normalize();
     const side = Math.sin(this._heliSway * ((2 * Math.PI) / 45) + this._heliSwayPhase) * 5;
-    _anchorPos.x += _tA.z * side;
-    _anchorPos.z += -_tA.x * side;
-    _anchorPos.y = _center.y + 12;
+    outPos.x += _tA.z * side;
+    outPos.z += -_tA.x * side;
+    outPos.y = _center.y + 12;
     // the nose PTZ: a stable shot at the car, with an occasional forward
     // "from the heli" look down the track
     this._heliViewT -= dt;
@@ -1203,12 +1250,18 @@ export class SpectatorCamera {
     }
     if (this._heliView === 'down') {
       // lead the car a bit so it sits in the lower third of the frame
-      _anchorLook.copy(_center).addScaledVector(_fwd, 6);
+      outLook.copy(_center).addScaledVector(_fwd, 6);
     } else {
       // "from the heli": the pilot's view, ahead down the track
-      _anchorLook.copy(_center).addScaledVector(_fwd, 120);
-      _anchorLook.y = _center.y + 4;
+      outLook.copy(_center).addScaledVector(_fwd, 120);
+      outLook.y = _center.y + 4;
     }
+  }
+
+  _heliShot(dt) {
+    const e = this._subjectEntry;
+    if (!e || !e.driver) return; // no field yet: main.js parks the heli
+    this._heliAnchor(e, dt, _anchorPos, _anchorLook);
     this.tvHeli = { pos: _anchorPos, look: _anchorLook };
     // fallback camera (headless tests / no physical heli): the same
     // anchor + look

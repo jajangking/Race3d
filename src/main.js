@@ -1092,10 +1092,12 @@ function frame(now) {
     heli1.heli.root.visible = on && !(tv && spectator.shot === 0);
     heli2.heli.root.visible = on && !(tv && spectator.shot === 3);
     if (on) {
-      // heli 1: the director's anchor while the HELI shot is live,
-      // otherwise a rear-quarter follow on the leader (spectate) or on
-      // the player car (driving)
-      let a1 = tv ? spectator.tvHeli : null;
+      // heli 1: the director's anchor while the HELI shot is live, or
+      // the standby anchor over its last broadcast car while the feed
+      // is on another camera (it holds position like a real chopper and
+      // waits - the next HELI cut is already framed); otherwise a
+      // rear-quarter follow on the leader (spectate) or the player car
+      let a1 = tv ? spectator.tvHeli || spectator.tvHeliHold : null;
       if (!a1) {
         let followCar = car;
         if (spectate && opponents.length && race.progress.length === opponents.length) {
