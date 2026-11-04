@@ -292,7 +292,7 @@ console.log('C: crash pre-emption regression');
   ok(bad === 0, `0 bad frames (got ${bad})`);
   ok(cutAt !== null && Math.abs(cutAt - 10) < 0.1, `cuts to CRASH on the contact frame (t=${cutAt?.toFixed(2)})`);
   ok(releasedAt !== null && releasedAt >= 19.4 && releasedAt < 22, `holds ~2 s after the contact ends (released t=${releasedAt?.toFixed(2)})`);
-  ok(crashYMax > 15 && crashYMax < 20, `crash cam is the low pass (max y ${crashYMax.toFixed(1)} m, was 25.9 in v14.6)`);
+  ok(crashYMax > 24 && crashYMax < 40, `crash cam is the high heli pass (max y ${crashYMax.toFixed(1)} m, nose PTZ looking down)`);
 }
 
 // ------------------------------------------------------------ Test D

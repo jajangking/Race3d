@@ -265,11 +265,25 @@ const heli1 = new HeliUnit(
 );
 const heli2 = new HeliUnit(
   createHeliMesh({ stripe: 0x2b6fe2 }), // the incident / patrol heli (blue)
-  new THREE.Vector3(track.start.x, 48, track.start.z),
+  new THREE.Vector3(track.start.x, 44, track.start.z),
 );
 scene.add(heli1.heli.root, heli2.heli.root);
 spectator.helics = [heli1, heli2];
-let heliPatrolU = 0.15;
+// the patrol heli flies a free pattern over the FIELD CENTRE (not along
+// the track): the centre is recomputed when the active track changes
+const heliPatrolC = new THREE.Vector3();
+const _patrolTmp = new THREE.Vector3();
+function refreshHeliPatrol() {
+  const N = 96;
+  heliPatrolC.set(0, 0, 0);
+  for (let i = 0; i < N; i++) {
+    track.curve.getPointAt(i / N, _patrolTmp);
+    heliPatrolC.add(_patrolTmp);
+  }
+  heliPatrolC.divideScalar(N);
+}
+refreshHeliPatrol();
+let heliPatrolT = Math.random() * 100;
 const _ha = new THREE.Vector3(); // heli anchor scratch (pos)
 const _hl = new THREE.Vector3(); // heli anchor scratch (look)
 const _hf = new THREE.Vector3(); // follow-car forward
@@ -592,6 +606,7 @@ function activateRally() {
     });
   }
   track = rallyTrack;
+  refreshHeliPatrol();
   // the broadcast helis reposition over the new venue (no 300 m glide)
   const hs = gridPose(0, 0, 0);
   heli1.snap(new THREE.Vector3(hs.pos.x, 26, hs.pos.z), new THREE.Vector3(hs.pos.x, 0, hs.pos.z + 20));
@@ -1093,8 +1108,8 @@ function frame(now) {
         _hf.y = 0;
         if (_hf.lengthSq() < 1e-6) _hf.set(0, 0, 1);
         _hf.normalize();
-        _ha.set(lp.x - _hf.x * 20, lp.y + 14, lp.z - _hf.z * 20);
-        _hl.set(lp.x + _hf.x * 6, lp.y + 0.5, lp.z + _hf.z * 6);
+        _ha.set(lp.x - _hf.x * 15, lp.y + 26, lp.z - _hf.z * 15);
+        _hl.set(lp.x + _hf.x * 4, lp.y + 0.5, lp.z + _hf.z * 4);
         a1 = { pos: _ha, look: _hl };
       }
       heli1.update(dt, a1.pos, a1.look);
@@ -1104,11 +1119,15 @@ function frame(now) {
       if (a2) {
         heli2.update(dt, a2.pos, a2.look);
       } else {
-        heliPatrolU = (heliPatrolU + dt * 0.0022) % 1;
-        track.curve.getPointAt(heliPatrolU, _ha);
-        _ha.y += 48;
-        track.curve.getPointAt((heliPatrolU + 0.008) % 1, _hl);
-        _hl.y += 2;
+        // free flight: a slow lazy Lissajous over the field centre -
+        // not tied to the track, just staying high over the action
+        heliPatrolT += dt;
+        _ha.set(
+          heliPatrolC.x + Math.sin(heliPatrolT * 0.05) * 90,
+          44 + Math.sin(heliPatrolT * 0.11) * 7,
+          heliPatrolC.z + Math.sin(heliPatrolT * 0.037 + 1.3) * 90,
+        );
+        _hl.set(_ha.x, 0, _ha.z); // scanning straight down
         heli2.update(dt, _ha, _hl);
       }
     }

@@ -96,10 +96,12 @@ export function createHeliMesh({ body = 0xf4f6f8, stripe = 0xe23b2e } = {}) {
 }
 
 /**
- * One flying helicopter: a damped glide towards its moving anchor (far =
- * quick, close = slow settle), a yawed/banked attitude that follows the
- * velocity, and a slower look target so the view pans to a new subject
- * instead of snapping. The TV feed reads pos/look directly.
+ * One flying helicopter: a velocity-capped glide towards its moving
+ * anchor (a swoop, never a teleport), a yawed/banked attitude that
+ * follows the velocity, and a slower look target so the view pans to a
+ * new subject instead of snapping. The TV feed reads the stabilized
+ * nose PTZ (nosePos + look) - the camera sits in front of the nose, so
+ * the airframe (skids, rotors) never enters the picture.
  */
 export class HeliUnit {
   constructor(heli, startPos, lookStart) {
@@ -111,6 +113,23 @@ export class HeliUnit {
     this._pitch = 0;
     this._roll = 0;
     this._yawRate = 0;
+    // the TV camera: a stabilized PTZ gimbal mounted at the nose - ahead
+    // of the fuselage so the skids never enter the frame, and level
+    // (yaw only) so the heli's pitch/roll never reaches the picture
+    this.nosePos = new THREE.Vector3();
+    this.noseDist = 2.8; // just past the nose tip (the model is scaled 1.25)
+    this.camHeight = 0.35;
+    this._updateNose();
+  }
+
+  /** The stabilized nose position: forward by yaw only, level, +camHeight. */
+  _updateNose() {
+    const p = this.pos;
+    this.nosePos.set(
+      p.x + Math.sin(this._yaw) * this.noseDist,
+      p.y + this.camHeight,
+      p.z + Math.cos(this._yaw) * this.noseDist,
+    );
   }
 
   /**
@@ -121,6 +140,7 @@ export class HeliUnit {
     this.pos.copy(pos);
     this._vel.set(0, 0, 0);
     if (look) this.look.copy(look);
+    this._updateNose();
   }
 
   update(dt, anchorPos, anchorLook) {
@@ -164,6 +184,7 @@ export class HeliUnit {
     root.position.copy(p);
     _euler.set(this._pitch, this._yaw, this._roll, 'YXZ');
     root.quaternion.setFromEuler(_euler);
+    this._updateNose();
     this.heli.update(dt);
   }
 }
