@@ -11,6 +11,7 @@ import { createSkidMarks } from './render/skidMarks.js';
 import { createTireSmoke } from './render/tireSmoke.js';
 import { ChaseCamera } from './render/chaseCamera.js';
 import { SpectatorCamera } from './render/spectatorCamera.js';
+import { createHeliMesh, HeliUnit } from './render/heli.js';
 import { Input } from './input.js';
 import { Hud } from './hud.js';
 import { AIDriver } from './ai/aiDriver.js';
@@ -252,6 +253,27 @@ let spectate = false;
 let focusIdx = 0;
 let lastLeaderIdx = 0;
 const race = { laps: [], prevU: [], progress: [] };
+
+// The two broadcast helicopters flying over the field - physical objects
+// visible from every camera. The TV feed's HELI / CRASH shots are read
+// from their own smoothed poses (the camera IS the heli), so the heli
+// footage glides instead of zigzagging, and a crash flurry just sends
+// the incident heli gliding between contact points instead of teleporting.
+const heli1 = new HeliUnit(
+  createHeliMesh({ stripe: 0xe23b2e }), // the follow heli (red stripe)
+  new THREE.Vector3(track.start.x, 26, track.start.z),
+);
+const heli2 = new HeliUnit(
+  createHeliMesh({ stripe: 0x2b6fe2 }), // the incident / patrol heli (blue)
+  new THREE.Vector3(track.start.x, 48, track.start.z),
+);
+scene.add(heli1.heli.root, heli2.heli.root);
+spectator.helics = [heli1, heli2];
+let heliPatrolU = 0.15;
+const _ha = new THREE.Vector3(); // heli anchor scratch (pos)
+const _hl = new THREE.Vector3(); // heli anchor scratch (look)
+const _hf = new THREE.Vector3(); // follow-car forward
+const _hq = new THREE.Quaternion();
 
 // ------------------------------------------------- city (autonomous driving)
 // A grid of streets: the player drives car #1 while the 10 AI cars share
@@ -570,6 +592,10 @@ function activateRally() {
     });
   }
   track = rallyTrack;
+  // the broadcast helis reposition over the new venue (no 300 m glide)
+  const hs = gridPose(0, 0, 0);
+  heli1.snap(new THREE.Vector3(hs.pos.x, 26, hs.pos.z), new THREE.Vector3(hs.pos.x, 0, hs.pos.z + 20));
+  heli2.snap(new THREE.Vector3(hs.pos.x, 48, hs.pos.z), new THREE.Vector3(hs.pos.x, 0, hs.pos.z + 20));
   circuitTrack.group.visible = false;
   sceneryGroup.visible = false;
   rallyTrack.group.visible = true;
@@ -1040,6 +1066,53 @@ function frame(now) {
   if (started && spectate) spectator.update(dt, focusCar, focusDriver, opponents, race);
   else if (cityMode) chase.update(dt, cityFocusCar());
   else if (!spectate) chase.update(dt, car);
+
+  // ------------------------------------------------- broadcast helicopters
+  {
+    const on = !cityMode; // no broadcast in the city
+    heli1.heli.root.visible = on;
+    heli2.heli.root.visible = on;
+    if (on) {
+      const tv = started && spectator.mode === 'tv';
+      // heli 1: the director's anchor while the HELI shot is live,
+      // otherwise a rear-quarter follow on the leader (spectate) or on
+      // the player car (driving)
+      let a1 = tv ? spectator.tvHeli : null;
+      if (!a1) {
+        let followCar = car;
+        if (spectate && opponents.length && race.progress.length === opponents.length) {
+          let li = 0;
+          for (let i = 1; i < opponents.length; i++) {
+            if (race.progress[i] > race.progress[li]) li = i;
+          }
+          followCar = opponents[li].car;
+        }
+        const lp = followCar.body.translation();
+        const lq = followCar.body.rotation();
+        _hf.set(0, 0, 1).applyQuaternion(_hq.set(lq.x, lq.y, lq.z, lq.w));
+        _hf.y = 0;
+        if (_hf.lengthSq() < 1e-6) _hf.set(0, 0, 1);
+        _hf.normalize();
+        _ha.set(lp.x - _hf.x * 20, lp.y + 14, lp.z - _hf.z * 20);
+        _hl.set(lp.x + _hf.x * 6, lp.y + 0.5, lp.z + _hf.z * 6);
+        a1 = { pos: _ha, look: _hl };
+      }
+      heli1.update(dt, a1.pos, a1.look);
+      // heli 2: the incident anchor while the CRASH shot is live,
+      // otherwise a slow high flyover of the active circuit
+      const a2 = tv ? spectator.tvCrash : null;
+      if (a2) {
+        heli2.update(dt, a2.pos, a2.look);
+      } else {
+        heliPatrolU = (heliPatrolU + dt * 0.0022) % 1;
+        track.curve.getPointAt(heliPatrolU, _ha);
+        _ha.y += 48;
+        track.curve.getPointAt((heliPatrolU + 0.008) % 1, _hl);
+        _hl.y += 2;
+        heli2.update(dt, _ha, _hl);
+      }
+    }
+  }
 
   // shadow frustum follows the visible car (city: the focused car)
   const p = (cityMode ? cityFocusCar() : car).body.translation();

@@ -8,10 +8,11 @@ import { CAR } from '../vehicle/config.js';
  *   tv        a pure broadcast feed like an F1 TV channel, directed by a
  *             Q-learning agent: it is NOT locked to one car - every cut it
  *             picks both the shot and its own subject from the whole field.
- *             Actions: a long HELICOPTER pass that holds a rear-quarter
- *             follow on whoever is most interesting (it swings between the
- *             left and right rear quarters - never over the top, never in
- *             front), a CORNER PTZ camera standing at the mast of the next
+ *             Actions: a HELICOPTER pass that holds a fixed rear-quarter
+ *             point on whoever is most interesting (never over the top,
+ *             never in front, no swing - the camera is read from the real
+ *             broadcast helicopter's own damped flight, so the footage
+ *             glides instead of zigzagging), a CORNER PTZ camera standing at the mast of the next
  *             corner the subject is about to take (fixed position, the head
  *             pans to follow the car through the corner while the lens
  *             zooms in at the apex and back out), a 1V1 close-up on the
@@ -71,6 +72,9 @@ const _trackPos = new THREE.Vector3();
 const _trackTan = new THREE.Vector3();
 const _trackRight = new THREE.Vector3();
 const _to = new THREE.Vector3();
+const _anchorPos = new THREE.Vector3();
+const _anchorLook = new THREE.Vector3();
+const _orbitDir = new THREE.Vector3();
 
 const wrap = (u) => ((u % 1) + 1) % 1;
 
@@ -183,6 +187,15 @@ export class SpectatorCamera {
     this._crashPosSet = false;
     // the situation-fit the current shot had when it was chosen
     this._activeFit = 0.5;
+    // the physical broadcast helicopters (created in main.js): when
+    // present, the HELI / CRASH feed is read from their own smoothed
+    // poses - the camera is the helicopter, so the footage glides
+    this.helics = null;
+    // per-frame anchors for the helicopters (main.js flies them to these)
+    this.tvHeli = null; // { pos, look } while the HELI shot is live
+    this.tvCrash = null; // { pos, look } while the CRASH shot is live
+    // the incident heli's circle angle (slow, continuous)
+    this._crashAng = 0;
     this._loadDirector();
 
     // cinematic
@@ -332,6 +345,10 @@ export class SpectatorCamera {
     this.time += dt;
     this._field = field;
     this._race = race;
+    if (this.mode !== 'tv') {
+      this.tvHeli = null;
+      this.tvCrash = null;
+    }
     // in TV mode the Q-director owns the subject, so a focus change
     // (lead change / X key) must not re-seat the camera; the other modes
     // still snap on re-focus
@@ -390,6 +407,18 @@ export class SpectatorCamera {
       this.pos.y += (_desired.y - this.pos.y) * kUp;
     }
 
+    // the TV heli/crash feed is read from the physical helicopter's own
+    // pose: the camera sits exactly where the heli flies (no second
+    // smoothing layer, so the footage cannot zigzag)
+    const hu = this.helics;
+    if (hu && this.mode === 'tv' && (this.shot === 0 || this.shot === 3)) {
+      const u = this.shot === 0 ? hu[0] : hu[1];
+      if (u) {
+        this.pos.copy(u.pos);
+        _look.copy(u.look);
+      }
+    }
+
     const cam = this.camera;
     cam.position.copy(this.pos);
     cam.up.set(0, 1, 0);
@@ -404,6 +433,9 @@ export class SpectatorCamera {
 
   // ------------------------------------------------------------ TV shots
   _tvShot(dt, driver, focusCar) {
+    // per-frame helicopter anchors (set by the live shot, cleared here)
+    this.tvHeli = null;
+    this.tvCrash = null;
     // ------------------------------------------------ crash pre-emption
     // a crash = two car bodies touching: OBB test on the same cuboid as
     // the physics colliders, with a small lead-in margin so the cut lands
@@ -456,7 +488,17 @@ export class SpectatorCamera {
         this._subject = null; // re-seat a fresh subject for the heli pass
         this._shotLastSeen[0] = this.time;
       } else {
+        // the incident heli circles the contact point slowly; the feed is
+        // read from its pose (see update())
+        this._crashAng += dt * 0.16;
         this._crashShot(dt);
+        _anchorPos.set(
+          _center.x + Math.cos(this._crashAng) * 24,
+          _center.y + 16,
+          _center.z + Math.sin(this._crashAng) * 24,
+        );
+        _anchorLook.copy(_center);
+        this.tvCrash = { pos: _anchorPos, look: _anchorLook };
         return;
       }
     }
@@ -561,7 +603,7 @@ export class SpectatorCamera {
       this._shotCovFrames = 0;
     }
     if (this.shot === 0) {
-      // heli: high, slowly orbiting around its subject, wide angle
+      // heli: rear-quarter follow, read from the physical heli's pose
       this._subjectPose();
       this._heliShot();
       return;
@@ -764,15 +806,12 @@ export class SpectatorCamera {
     if (this._crashPosSet) {
       _center.set(this._crashPos.x, this._crashPos.y, this._crashPos.z);
     }
-    const t = this.time;
-    const ang = t * 0.16 + this.drift + 2.1; // slow orbit, offset from the heli
-    const r = 24 + 2.2 * Math.sin(t * 0.14);
-    _right.set(_fwd.z, 0, -_fwd.x);
-    _desired
-      .copy(_center)
-      .addScaledVector(_right, Math.cos(ang) * r)
-      .addScaledVector(_fwd, Math.sin(ang) * r);
-    _desired.y = _center.y + 16 + 1.2 * Math.sin(t * 0.13);
+    // a slow world-basis pass around the contact point; the same angle
+    // drives the physical incident heli's anchor, so the fallback camera
+    // (headless tests) and the heli frame identically
+    _orbitDir.set(Math.cos(this._crashAng), 0, Math.sin(this._crashAng));
+    _desired.copy(_center).addScaledVector(_orbitDir, 24);
+    _desired.y = _center.y + 16;
     _look.copy(_center);
     this._setDamp(1.1, 1.6);
   }
@@ -1072,21 +1111,18 @@ export class SpectatorCamera {
   }
 
   _heliShot() {
-    // the broadcast heli: a rear-quarter follow. It swings between the
-    // left and right rear quarters (always at least ~18 m behind the car
-    // centre, 30-40 deg above the track) - never over the top, never in
-    // front of the car
-    const t = this.time;
-    const ang = Math.PI + 0.85 * Math.sin(t * 0.21 + this.drift);
-    const r = 21 + 2 * Math.sin(t * 0.17);
-    _right.set(_fwd.z, 0, -_fwd.x);
-    _desired
-      .copy(_center)
-      .addScaledVector(_right, Math.cos(ang) * r)
-      .addScaledVector(_fwd, Math.sin(ang) * r);
-    _desired.y = _center.y + 14 + 1.8 * Math.sin(t * 0.15);
+    // the broadcast heli's anchor: a fixed rear-quarter point behind the
+    // subject (always ~20 m behind, 14 m up - never over the top, never
+    // in front, and no side-to-side swing). The physical heli (main.js)
+    // glides to this anchor and the feed is read from the heli's own
+    // pose, so the footage is as smooth as the helicopter's flight.
+    _anchorPos.copy(_center).addScaledVector(_fwd, -20);
+    _anchorPos.y = _center.y + 14;
     // lead the car a bit so it sits in the lower third of the frame
-    _look.copy(_center).addScaledVector(_fwd, 7);
+    _anchorLook.copy(_center).addScaledVector(_fwd, 7);
+    this.tvHeli = { pos: _anchorPos, look: _anchorLook };
+    _desired.copy(_anchorPos);
+    _look.copy(_anchorLook);
     this._setDamp(1.2, 1.8);
   }
 
