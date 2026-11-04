@@ -146,15 +146,16 @@ export class HeliUnit {
   update(dt, anchorPos, anchorLook) {
     const p = this.pos;
     // velocity model: target speed grows with the distance to the anchor
-    // (capped at 45 m/s - a heli, not a teleport), and the velocity is
-    // smoothed so subject switches become a swoop, not a zigzag. The
-    // steady-state lag behind a moving subject is ~v/3.5 m.
+    // (capped at 38 m/s - a calm heli, just fast enough to KEEP UP with
+    // the ~32 m/s field so the framing never drifts off the car), and the
+    // velocity is smoothed so subject switches become a slow swoop, not a
+    // zigzag. The steady-state lag behind a moving subject is ~v/3.5 m.
     _to.copy(anchorPos).sub(p);
     const d = _to.length();
-    const wantSpeed = THREE.MathUtils.clamp(d * 3.5, 0, 45);
+    const wantSpeed = THREE.MathUtils.clamp(d * 3.5, 0, 38);
     if (d > 1e-4) _to.multiplyScalar(wantSpeed / d);
     else _to.set(0, 0, 0);
-    this._vel.lerp(_to, 1 - Math.exp(-dt / 0.35));
+    this._vel.lerp(_to, 1 - Math.exp(-dt / 0.5));
     p.addScaledVector(this._vel, dt);
     // the look target is a bit slower: the feed pans to a new subject
     // smoothly instead of snapping

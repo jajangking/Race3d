@@ -1085,10 +1085,13 @@ function frame(now) {
   // ------------------------------------------------- broadcast helicopters
   {
     const on = !cityMode; // no broadcast in the city
-    heli1.heli.root.visible = on;
-    heli2.heli.root.visible = on;
+    const tv = started && spectator.mode === 'tv';
+    // the heli the TV camera is mounted on hides its airframe (the nose
+    // PTZ would leak fuselage/rotor into the frame); the other heli stays
+    // fully visible in the shot
+    heli1.heli.root.visible = on && !(tv && spectator.shot === 0);
+    heli2.heli.root.visible = on && !(tv && spectator.shot === 3);
     if (on) {
-      const tv = started && spectator.mode === 'tv';
       // heli 1: the director's anchor while the HELI shot is live,
       // otherwise a rear-quarter follow on the leader (spectate) or on
       // the player car (driving)
