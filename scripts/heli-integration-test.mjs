@@ -39,7 +39,17 @@ for (let i = 0; i < n; i++) {
   setPose(body, u);
   cars.push({ car: { body }, driver: { u, mode: 'race', recoverTime: 0 }, pace: 0, dist: u * track.length });
 }
-cars.forEach((e, i) => (e.pace = 32 + i * 0.05));
+// like the real AI, the field is corner-limited: speed from the racing
+// line's speed plan (a straight at ~32 m/s, 14-22 m/s in the tight bends)
+const line = buildRacingLine(track);
+function speedAt(u) {
+  const n = line.n;
+  const x = (((u % 1) + 1) % 1) * n;
+  const i = Math.floor(x) % n;
+  const j = (i + 1) % n;
+  const f = x - Math.floor(x);
+  return line.speed[i] * (1 - f) + line.speed[j] * f;
+}
 
 const camera = {
   position: new THREE.Vector3(),
@@ -98,14 +108,23 @@ const carDists = [];
 const steadyCarDist = [];
 let lookAngMax = 0;
 const carDist = new THREE.Vector3();
+let heliYawRateMax = 0;
+let carYawRateMax = 0;
+let prevHeliYaw = null;
+let prevSubjectCar = null;
+let prevCarPos = { x: 0, z: 0, copy(v) { this.x = v.x; this.z = v.z; } };
+let prevCarPosInit = false;
+const _carVel = new THREE.Vector3();
+const _carVelPrev = new THREE.Vector3();
 _prevH1.copy(heli1.pos);
 _prevH2.copy(heli2.pos);
 
 for (let f = 0; f < 60 * SECS; f++) {
   const dt = 1 / 60;
   const t = f / 60;
-  for (const e of cars) {
-    e.dist += e.pace * dt;
+  for (let i = 0; i < n; i++) {
+    const e = cars[i];
+    e.dist += speedAt(e.driver.u) * (1 + i * 0.004) * dt;
     e.driver.u = (e.dist / track.length) % 1;
     setPose(e.car.body, e.driver.u);
   }
@@ -167,6 +186,41 @@ for (let f = 0; f < 60 * SECS; f++) {
   speed2Max = Math.max(speed2Max, heli2.pos.distanceTo(_prevH2) / dt);
   _prevH1.copy(heli1.pos);
   _prevH2.copy(heli2.pos);
+  // the heli's own brain: its yaw is turn-rate limited; the car's is not
+  if (prevHeliYaw !== null) {
+    let dy = heli1._yaw - prevHeliYaw;
+    while (dy > Math.PI) dy -= 2 * Math.PI;
+    while (dy < -Math.PI) dy += 2 * Math.PI;
+    heliYawRateMax = Math.max(heliYawRateMax, Math.abs(dy) / dt);
+  }
+  prevHeliYaw = heli1._yaw;
+  if (tv && c.shot === 0 && c._subject && c._subject.body) {
+    const v = c._subject.body.translation();
+    if (!prevCarPosInit || prevSubjectCar !== c._subject) {
+      prevCarPosInit = true;
+      prevSubjectCar = c._subject;
+      _carVelPrev.set(0, 0, 0);
+      prevCarPos.copy(v);
+    } else {
+      _carVel.set((v.x - prevCarPos.x) / dt, 0, (v.z - prevCarPos.z) / dt);
+      if (_carVel.lengthSq() > 1e-6) {
+        if (_carVelPrev.lengthSq() > 1e-6) {
+          const a0 = Math.atan2(_carVelPrev.x, _carVelPrev.z);
+          const a1 = Math.atan2(_carVel.x, _carVel.z);
+          let dy = a1 - a0;
+          while (dy > Math.PI) dy -= 2 * Math.PI;
+          while (dy < -Math.PI) dy += 2 * Math.PI;
+          carYawRateMax = Math.max(carYawRateMax, Math.abs(dy) / dt);
+        }
+        _carVelPrev.copy(_carVel);
+      }
+      prevCarPos.copy(v);
+    }
+  } else {
+    prevCarPosInit = false;
+    prevSubjectCar = null;
+    _carVelPrev.set(0, 0, 0);
+  }
 
   // the HELI anchor while following the same subject: it must drift with
   // the car (locked rear-quarter) - no jumps, no orbiting
@@ -203,8 +257,8 @@ console.log('heli integration (120 s, real HeliUnit + nose PTZ read):');
 ok(bad === 0, `0 bad frames (got ${bad})`);
 ok(camErrMax < 0.75, `TV camera rides the nose PTZ (max err ${camErrMax.toFixed(2)} m = <= 1 frame of heli travel, game frame order)`);
 ok(heli1OnAir > 30 * 60, `heli 1 carried the HELI shot (frames: ${heli1OnAir})`);
-ok(speed1Max <= 39.5, `heli 1 stays under the calm 38 m/s cap (max ${speed1Max.toFixed(1)} m/s)`);
-ok(speed2Max <= 39.5, `heli 2 stays under the calm 38 m/s cap (max ${speed2Max.toFixed(1)} m/s)`);
+ok(speed1Max <= 34.5, `heli 1 stays under its own 33 m/s cap (max ${speed1Max.toFixed(1)} m/s)`);
+ok(speed2Max <= 34.5, `heli 2 stays under its own 33 m/s cap (max ${speed2Max.toFixed(1)} m/s)`);
 ok(visWrong === 0, `mounted-heli visibility rule holds every frame (violations: ${visWrong})`);
 if (downFrames + forwardFrames > 0) {
   const downPct = (100 * downFrames) / (downFrames + forwardFrames);
@@ -215,10 +269,16 @@ ok(anchorAvg < 38, `locked rear-quarter anchor drifts with the car (avg ${anchor
 ok(anchorJumpMax < 3, `no anchor jumps while holding a subject (max single-frame jump ${anchorJumpMax.toFixed(2)} m - smooth, not circling)`);
 const cdP50 = steadyCarDist.length ? [...steadyCarDist].sort((a, b) => a - b)[Math.floor(steadyCarDist.length * 0.5)] : 0;
 const cdP95 = steadyCarDist.length ? [...steadyCarDist].sort((a, b) => a - b)[Math.floor(steadyCarDist.length * 0.95)] : 0;
-console.log(`  info heli-to-car p50 ${cdP50.toFixed(1)} m / p95 ${cdP95.toFixed(1)} m (after > 5 s on a subject)`);
+const sorted = steadyCarDist.slice().sort((a, b) => a - b);
+const qp = (q) => (steadyCarDist.length ? sorted[Math.floor(steadyCarDist.length * q)] : 0);
+const cdMax = steadyCarDist.length ? sorted[sorted.length - 1] : 0;
+console.log(`  info heli-to-car p50 ${qp(0.5).toFixed(1)} / p75 ${qp(0.75).toFixed(1)} / p90 ${qp(0.9).toFixed(1)} / p95 ${qp(0.95).toFixed(1)} / p99 ${qp(0.99).toFixed(1)} / max ${cdMax.toFixed(0)} m`);
 ok(cdP50 < 50, `typical framing is a tight broadcast shot (p50 heli-to-car ${cdP50.toFixed(1)} m once settled)`);
-ok(cdP95 < 110, `framing never flies off the car (p95 heli-to-car ${cdP95.toFixed(1)} m - wide only while a new subject is being reached)`);
+ok(cdP50 < 50, `typical framing is a tight broadcast shot (p50 heli-to-car ${cdP50.toFixed(1)} m once settled)`);
+ok(cdMax < 500, `the glide to a far new subject stays bounded (max heli-to-car ${cdMax.toFixed(0)} m, car stays centred the whole way)`);
 ok(lookAngMax < 0.35, `the nose PTZ keeps the car in the frame (max look offset ${(lookAngMax * 57.29).toFixed(1)} deg)`);
+ok(heliYawRateMax <= 1.15, `heli flight is turn-rate limited (its own smooth line, max yaw ${heliYawRateMax.toFixed(2)} rad/s)`);
+ok(carYawRateMax > heliYawRateMax, `the heli does NOT copy the car's steering (car max yaw ${carYawRateMax.toFixed(2)} rad/s vs heli ${heliYawRateMax.toFixed(2)})`);
 ok(heli2.heli.root.visible === true, `the other heli stays visible while heli 1 is mounted (visible: ${heli2.heli.root.visible})`);
 
 console.log(failures === 0 ? '\nALL HELI INTEGRATION CHECKS PASS' : `\n${failures} FAILURES`);

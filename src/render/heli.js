@@ -145,21 +145,25 @@ export class HeliUnit {
 
   update(dt, anchorPos, anchorLook) {
     const p = this.pos;
-    // velocity model: target speed grows with the distance to the anchor
-    // (capped at 38 m/s - a calm heli, just fast enough to KEEP UP with
-    // the ~32 m/s field so the framing never drifts off the car), and the
-    // velocity is smoothed so subject switches become a slow swoop, not a
-    // zigzag. The steady-state lag behind a moving subject is ~v/3.5 m.
+    // velocity model: the heli has its OWN brain - it is NOT a delayed
+    // copy of the car's line. Target speed grows with the distance to the
+    // anchor (capped at 33 m/s: it can keep up on a straight, but in a
+    // corner it simply cannot steer as hard as the car - see the yaw cap
+    // below - so it flies its own wide, smooth arc around the bend and
+    // the framing breathes wide then converges on the exit), and the
+    // velocity is smoothed with a long constant so take-offs and pulls
+    // are gradual swoops, never jerks.
     _to.copy(anchorPos).sub(p);
     const d = _to.length();
-    const wantSpeed = THREE.MathUtils.clamp(d * 3.5, 0, 38);
+    const wantSpeed = THREE.MathUtils.clamp(d * 3.5, 0, 33);
     if (d > 1e-4) _to.multiplyScalar(wantSpeed / d);
     else _to.set(0, 0, 0);
-    this._vel.lerp(_to, 1 - Math.exp(-dt / 0.5));
+    this._vel.lerp(_to, 1 - Math.exp(-dt / 0.8));
     p.addScaledVector(this._vel, dt);
-    // the look target is a bit slower: the feed pans to a new subject
-    // smoothly instead of snapping
-    this.look.lerp(anchorLook, 1 - Math.exp(-dt / 0.5));
+    // the PTZ gimbal tracks the target fast enough that the car stays in
+    // the frame, but the pan is smoothed so a fast direction change
+    // reads as a camera move, not a whip
+    this.look.lerp(anchorLook, 1 - Math.exp(-dt / 0.3));
 
     const hSpeed = Math.hypot(this._vel.x, this._vel.z);
     // nose along the direction of travel while moving, else along the
@@ -171,7 +175,10 @@ export class HeliUnit {
     let dYaw = want - this._yaw;
     while (dYaw > Math.PI) dYaw -= 2 * Math.PI;
     while (dYaw < -Math.PI) dYaw += 2 * Math.PI;
-    const maxStep = 1.7 * dt;
+    // the heli's own turn limit (1.0 rad/s): at ~30 m/s that is a ~30 m
+    // radius - wider than the tightest rally corner, so the heli rounds
+    // the car's line with its own smooth arc instead of copying it
+    const maxStep = 1.0 * dt;
     const step = THREE.MathUtils.clamp(dYaw, -maxStep, maxStep);
     this._yaw += step;
     this._yawRate = this._yawRate * 0.9 + (step / Math.max(dt, 1e-4)) * 0.1;
