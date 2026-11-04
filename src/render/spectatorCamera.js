@@ -4,14 +4,22 @@ import * as THREE from 'three';
  * Spectator cameras for AI-vs-AI race mode. The player watches the field and
  * switches between four shots with C, and picks which car to follow with X:
  *
- *   tv        a pure broadcast feed like an F1 TV channel: only camera
- *             shots, hard-cut (switch camera) transitions - a long
- *             slowly-orbiting HELICOPTER pass, a static CORNER camera
- *             waiting at the next big corner ahead, a 1v1 shot that finds
- *             the closest pair in the field and frames their battle, and a
- *             CRASH camera that pre-empts everything the moment a car goes
- *             off track (driver recover/reverse mode) and holds until the
- *             incident is cleared
+ *   tv        a pure broadcast feed like an F1 TV channel, directed by a
+ *             Q-learning agent: it is NOT locked to one car - every cut it
+ *             picks both the shot and its own subject from the whole field.
+ *             Actions: a long slowly-orbiting HELICOPTER pass on whoever is
+ *             most interesting, a static CORNER camera at the next big
+ *             corner a car is about to take, a 1V1 close-up on the closest
+ *             pair in the field (their battle), and a CRASH camera that
+ *             pre-empts everything the moment a car goes off track (driver
+ *             recover/reverse mode) and holds until it is cleared.
+ *             State: leader gap bucket x pack density around the leader
+ *             (12 states). Reward per shot: how interesting the on-screen
+ *             car was (rank, battle gaps, corner approaches, recency) plus
+ *             subject novelty, minus back-to-back same-camera repeats.
+ *             Q starts from a hand-tuned "experienced director" prior,
+ *             updates online every cut (alpha 0.06, gamma 0.9, epsilon
+ *             0.15 -> 0.03) and is persisted to localStorage.
  *   orbit     fully player-driven: drag to rotate (yaw + pitch), wheel or
  *             pinch to zoom. Auto-rotation only kicks in after the player
  *             has stopped touching it
@@ -75,15 +83,39 @@ export class SpectatorCamera {
     this.shot = 0;
     this.shotTimer = 12;
     this._focus = null;
-    this._shotGen = 0; // bumped on every hard cut (1V1 re-picks its target)
+    this._shotGen = 0; // bumped on every hard cut
     this._field = null;
     this._race = null;
     this._corners = null; // cached major-corner list, built lazily
-    this.oneIdx = -1; // rank index of the last car 1V1 showed
+    this.oneIdx = -1; // parity for the 1V1 side flip
     this.oneCar = null; // object reference to the car 1V1 is on
     this.oneGen = -1; // shot generation 1V1 was picked in
     this._crashHold = 0; // seconds the CRASH shot must stay on screen
     this._crashTarget = null; // the car the crash camera is on
+
+    // Q-learning director: 12 states (leader-gap x pack) x 3 actions
+    // (0 HELI, 1 CORN, 2 1V1); CRASH (3) is forced, never learned
+    this.Q = new Float64Array(36);
+    const prior = [
+      [0.35, 0.5, 0.45, 0.6], // HELI by leader-gap bucket
+      [0.55, 0.6, 0.65, 0.55], // CORN
+      [1.0, 0.95, 0.55, 0.25], // 1V1
+    ];
+    for (let s = 0; s < 12; s++) {
+      const g = (s / 3) | 0;
+      for (let a = 0; a < 3; a++) this.Q[s * 3 + a] = prior[a][g];
+    }
+    this.qEps = 0.15;
+    this._subject = null; // the car the current shot is on
+    this._subjectEntry = null; // {car, driver} for fast u access
+    this._prevSubject = null;
+    this._prevShot = -1;
+    this._pendS = null; // (state, action) of the last decision
+    this._pendA = null;
+    this._shotSum = 0; // accumulated on-screen interest of the current shot
+    this._shotFrames = 0;
+    this._seen = new Map(); // car -> time it last was the on-screen subject
+    this._loadDirector();
 
     // cinematic
     this.cineShot = 0;
@@ -113,6 +145,14 @@ export class SpectatorCamera {
     this._shotGen++;
     this._crashHold = 0;
     this._crashTarget = null;
+    this._subject = null;
+    this._subjectEntry = null;
+    this._prevSubject = null;
+    this._prevShot = -1;
+    this._pendS = null;
+    this._pendA = null;
+    this._shotSum = 0;
+    this._shotFrames = 0;
     this.cineShot = 0;
     this.cineT = 0;
     return this.mode;
@@ -221,13 +261,16 @@ export class SpectatorCamera {
     this.time += dt;
     this._field = field;
     this._race = race;
-    // a broadcast cuts when the focus car changes (the lead changes); a
-    // fresh field means ONE's stored car is stale too - re-pick next time
+    // in TV mode the Q-director owns the subject, so a focus change
+    // (lead change / X key) must not re-seat the camera; the other modes
+    // still snap on re-focus
     if (car !== this._focus) {
       this._focus = car;
-      this.initialised = false;
-      this.oneCar = null;
-      this.oneGen = -1;
+      if (this.mode !== 'tv') {
+        this.initialised = false;
+        this.oneCar = null;
+        this.oneGen = -1;
+      }
     }
 
     const t = car.body.translation();
@@ -309,6 +352,12 @@ export class SpectatorCamera {
         this.shot = 3;
         this.initialised = false; // hard cut to the incident
         this._shotGen++;
+        // the crash cam is outside the Q action space: drop the pending
+        // decision so its (meaningless) reward is never applied
+        this._pendA = null;
+        this._pendS = null;
+        this._shotSum = 0;
+        this._shotFrames = 0;
       }
     } else {
       this._crashHold -= dt;
@@ -322,37 +371,242 @@ export class SpectatorCamera {
         this.initialised = false;
         this._shotGen++;
         this._crashTarget = null;
+        this._subject = null; // re-seat a fresh subject for the heli pass
       } else {
         this._crashShot(dt);
         return;
       }
     }
-    // ------------------------------------------------ normal rotation
+    // ------------------------------------------------ the Q-learning cut
+    const S = this._scene();
+    if (this._subject === null && S) {
+      // first frame in TV: seat the subject for the opening shot (no cut)
+      this._subject = this._pickSubject(this.shot, S, focusCar);
+      this._seatSubject();
+    }
+    // reward accumulation: how interesting is the car on screen right now
+    if (S && this._subject) {
+      this._shotSum += S.interests.get(this._subject) || 0;
+      this._shotFrames++;
+    }
     this.shotTimer -= dt;
     if (this.shotTimer <= 0) {
       let next;
-      do {
-        next = (Math.random() * 3) | 0; // never the crash slot
-      } while (next === this.shot);
+      if (S) {
+        const s = S.state;
+        // reward of the shot that just ended: average on-screen interest,
+        // plus subject novelty, minus back-to-back same-camera repeats
+        const avg = this._shotFrames ? this._shotSum / this._shotFrames : 0;
+        const r =
+          avg +
+          (this._subject && this._prevSubject && this._subject !== this._prevSubject ? 0.15 : 0) -
+          (this._prevShot >= 0 && this.shot === this._prevShot ? 0.3 : 0);
+        // Q-update for the decision taken at the previous cut
+        if (this._pendA !== null && this._pendS !== null) {
+          const idx = this._pendS * 3 + this._pendA;
+          let maxQ = -Infinity;
+          for (let b = 0; b < 3; b++) maxQ = Math.max(maxQ, this.Q[s * 3 + b]);
+          this.Q[idx] = Math.max(-2, Math.min(3, this.Q[idx] + 0.06 * (r + 0.9 * maxQ - this.Q[idx])));
+        }
+        // epsilon-greedy on the current state
+        if (Math.random() < this.qEps) {
+          next = (Math.random() * 3) | 0;
+        } else {
+          next = 0;
+          for (let b = 1; b < 3; b++) if (this.Q[s * 3 + b] > this.Q[s * 3 + next]) next = b;
+        }
+        this.qEps = Math.max(0.03, this.qEps * 0.9985);
+        this._pendS = s;
+        this._pendA = next;
+        this._saveDirector();
+      } else {
+        // no field data: fall back to plain random rotation
+        do {
+          next = (Math.random() * 3) | 0;
+        } while (next === this.shot);
+      }
+      this._prevSubject = this._subject;
+      this._prevShot = this.shot;
       this.shot = next;
       const d = TV_SHOTS[next].dur;
       this.shotTimer = d[0] + Math.random() * (d[1] - d[0]);
+      // new subject for the new shot - picked by the director, not the X key
+      this._subject = S ? this._pickSubject(next, S, focusCar) : focusCar;
+      this._seatSubject();
       this.initialised = false; // hard cut, like a real broadcast
       this._shotGen++;
+      this._shotSum = 0;
+      this._shotFrames = 0;
     }
-    const u = driver ? driver.u : 0;
     if (this.shot === 0) {
-      // heli: high, slowly orbiting around the car, wide angle
+      // heli: high, slowly orbiting around its subject, wide angle
+      this._subjectPose();
       this._heliShot();
       return;
     } else if (this.shot === 1) {
-      // corn: a static trackside camera waiting at the next big corner
-      // ahead of the focus car - the car drives into the frame
-      this._cornerShot(u);
+      // corn: static trackside camera at the next big corner ahead of the
+      // subject car - it drives into the frame
+      this._cornerShot(this._subjectU());
       return;
     }
-    // 1v1: find the closest pair in the field and frame their battle
+    // 1v1: close-up on the closest pair, from behind the trailing car
+    this._subjectPose();
     this._oneShot(focusCar);
+  }
+
+  // ------------------------------------------------ Q director helpers
+  _scene() {
+    // per-frame field analysis: rank order, leader gap, pack density and a
+    // per-car "interesting" score (rank + battle gaps + corner approach +
+    // recency - all the signals a human director uses)
+    const f = this._field;
+    const r = this._race;
+    if (!f || !f.length || !r || !Array.isArray(r.progress) || r.progress.length !== f.length) return null;
+    const n = f.length;
+    const L = this.track.length;
+    const order = f.map((_, i) => i).sort((a, b) => r.progress[b] - r.progress[a]);
+    const rankOf = new Array(n);
+    for (let k = 0; k < n; k++) rankOf[order[k]] = k;
+    let gapLead = 99;
+    let pack = 0;
+    for (let i = 1; i < n; i++) {
+      let g = (r.progress[order[0]] - r.progress[order[i]]) * L;
+      if (g < 0) g += L;
+      if (i === 1) gapLead = g;
+      if (g < 25) pack++;
+    }
+    const sGap = gapLead < 3 ? 0 : gapLead < 10 ? 1 : gapLead < 30 ? 2 : 3;
+    const sPack = pack <= 1 ? 0 : pack <= 3 ? 1 : 2;
+    const corners = this._ensureCorners();
+    const now = this.time;
+    const interests = new Map();
+    for (let i = 0; i < n; i++) {
+      const e = f[i];
+      let it = 1.0 - 0.08 * rankOf[i];
+      // battle: how close this car is to the car in front of it
+      const ahead = rankOf[i] > 0 ? order[rankOf[i] - 1] : order[n - 1];
+      let gap = (r.progress[ahead] - r.progress[i]) * L;
+      if (gap <= 0) gap += L;
+      if (gap < 8) it += 0.6;
+      else if (gap < 25) it += 0.3;
+      else if (gap > 70) it -= 0.15;
+      // corner approach: any major corner within the next ~120 m
+      const uu = e.driver ? e.driver.u : 0;
+      for (let c = 0; c < corners.length; c++) {
+        if (wrap(corners[c].u - uu) < 0.07) {
+          it += 0.2;
+          break;
+        }
+      }
+      // recency: the feed should not stay glued to one car
+      const last = this._seen.get(e.car);
+      if (last !== undefined) {
+        const age = now - last;
+        if (age < 12) it -= 0.5 * Math.exp(-age / 8);
+      }
+      interests.set(e.car, Math.max(0.05, Math.min(1.5, it)));
+    }
+    return { state: sGap * 3 + sPack, interests, order };
+  }
+
+  _pickSubject(a, S, focusCar) {
+    const f = this._field;
+    if (!f || !f.length) return focusCar;
+    if (a === 2) {
+      // 1V1: always the closest pair in the field - show its trailing car
+      const n = f.length;
+      const L = this.track.length;
+      let best = Infinity;
+      let trailer = null;
+      for (let i = 0; i < n; i++) {
+        const A = S.order[i];
+        const B = S.order[(i + 1) % n];
+        let g = (this._race.progress[A] - this._race.progress[B]) * L;
+        if (g <= 0) g += L;
+        if (g < best) {
+          best = g;
+          trailer = f[B].car;
+        }
+      }
+      if (trailer) return trailer;
+    }
+    // HELI / CORN: whoever is most interesting right now
+    let best = -1;
+    let bestCar = focusCar;
+    for (let i = 0; i < f.length; i++) {
+      const it = S.interests.get(f[i].car) || 0;
+      if (it > best) {
+        best = it;
+        bestCar = f[i].car;
+      }
+    }
+    return bestCar;
+  }
+
+  _seatSubject() {
+    const car = this._subject;
+    if (!car) return;
+    if (this._field) {
+      for (const e of this._field) {
+        if (e.car === car) {
+          this._subjectEntry = e;
+          break;
+        }
+      }
+    }
+    this._seen.set(car, this.time);
+    if (this.shot === 2) {
+      this.oneCar = car;
+      this.oneGen = this._shotGen;
+      this.oneIdx = (this.oneIdx + 1) | 0; // alternate the side flip
+    }
+  }
+
+  _subjectU() {
+    return this._subjectEntry && this._subjectEntry.driver ? this._subjectEntry.driver.u : 0;
+  }
+
+  _subjectPose() {
+    // point the shared pose scratch at the current subject, not the focus car
+    const car = this._subject || this._focus;
+    if (!car) return;
+    const t = car.body.translation();
+    const q = car.body.rotation();
+    _camQuat.set(q.x, q.y, q.z, q.w);
+    _fwd.set(0, 0, 1).applyQuaternion(_camQuat);
+    _fwd.y = 0;
+    if (_fwd.lengthSq() < 1e-6) _fwd.set(0, 0, 1);
+    _fwd.normalize();
+    _center.set(t.x, t.y + 0.7, t.z);
+  }
+
+  _loadDirector() {
+    // the director remembers what it learned between sessions
+    try {
+      if (typeof localStorage === 'undefined') return;
+      const raw = localStorage.getItem('race3d-qdirector-v1');
+      if (!raw) return;
+      const d = JSON.parse(raw);
+      if (Array.isArray(d.q) && d.q.length === 36) {
+        for (let i = 0; i < 36; i++) {
+          const v = Number(d.q[i]);
+          if (Number.isFinite(v)) this.Q[i] = Math.max(-2, Math.min(3, v));
+        }
+        const e = Number(d.e);
+        if (Number.isFinite(e) && e >= 0.01) this.qEps = Math.min(0.15, e);
+      }
+    } catch {
+      /* corrupted blob - keep the prior */
+    }
+  }
+
+  _saveDirector() {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      localStorage.setItem('race3d-qdirector-v1', JSON.stringify({ v: 1, q: Array.from(this.Q), e: this.qEps }));
+    } catch {
+      /* storage unavailable - learning is still in-memory */
+    }
   }
 
   _crashShot(dt) {
@@ -486,6 +740,13 @@ export class SpectatorCamera {
   // biggest corners, cached for the whole session (static per track).
   _ensureCorners() {
     if (this._corners) return this._corners;
+    // layout-derived: one camera slot at EVERY designed corner (both
+    // tracks ship their corner list); the curvature detector below stays
+    // as a fallback for tracks without layout data
+    if (Array.isArray(this.track.corners) && this.track.corners.length) {
+      this._corners = this.track.corners;
+      return this._corners;
+    }
     const line = this.track.racingLine;
     const out = [];
     if (line && line.curvatureSigned) {
@@ -588,39 +849,8 @@ export class SpectatorCamera {
   }
 
   _oneShot(focusCar) {
-    // every time the director picks 1V1, find the closest pair in the field
-    // (a real battle) and frame it; if nobody is close, walk the ranks
-    if (this.oneGen !== this._shotGen) {
-      this.oneGen = this._shotGen;
-      const f = this._field;
-      const pool = f && f.length ? f : [{ car: focusCar }];
-      const n = pool.length;
-      let targetIdx = (this.oneIdx + 1) % n;
-      if (this._race && this._race.progress && this._race.progress.length === n && n >= 2) {
-        const order = pool.map((_, i) => i).sort((a, b) => this._race.progress[b] - this._race.progress[a]);
-        const L = this.track.length;
-        let bestGap = 30; // only call it a battle within 30 m
-        let bestTrailer = -1;
-        for (let i = 0; i < n; i++) {
-          const a = order[i];
-          const b = order[(i + 1) % n];
-          let g = (this._race.progress[a] - this._race.progress[b]) * L;
-          if (g <= 0) g += L; // wrap: the leader "chases" the lagger
-          if (g < bestGap) {
-            bestGap = g;
-            bestTrailer = (i + 1) % n;
-          }
-        }
-        if (bestTrailer >= 0) {
-          targetIdx = order[bestTrailer];
-          this.oneIdx = order.indexOf(targetIdx);
-        } else {
-          targetIdx = order[this.oneIdx % n];
-        }
-      }
-      this.oneCar = pool[targetIdx].car;
-    }
-    const target = this.oneCar && this.oneCar.body ? this.oneCar : focusCar;
+    // the director pre-picked the closest pair's trailing car as the subject
+    const target = this._subject && this._subject.body ? this._subject : focusCar;
     const t = target.body.translation();
     const q = target.body.rotation();
     _camQuat.set(q.x, q.y, q.z, q.w);

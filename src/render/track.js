@@ -648,6 +648,40 @@ export function createTrack(scene, layout) {
     group.add(cones, bases);
   }
 
+  // ------------------------------------------- broadcast camera masts
+  // a pole + camera head at every corner camera slot - the same 12.5 m
+  // outside position the TV corner cam uses, so the mast stands exactly
+  // where the broadcast camera in the shot is "sitting"
+  if (layout.corners && layout.corners.length) {
+    const poleGeo = new THREE.BoxGeometry(0.16, 3.0, 0.16);
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.6, metalness: 0.4 });
+    const headGeo = new THREE.BoxGeometry(0.72, 0.46, 0.5);
+    const headMat = new THREE.MeshStandardMaterial({ color: 0x2b2f36, roughness: 0.5, metalness: 0.2 });
+    const masts = new THREE.Group();
+    const mP = new THREE.Vector3();
+    const mT = new THREE.Vector3();
+    const mR = new THREE.Vector3();
+    const mL = new THREE.Vector3();
+    for (const c of layout.corners) {
+      curve.getPointAt(c.u, mP);
+      curve.getTangentAt(c.u, mT);
+      mT.y = 0;
+      mT.normalize();
+      mR.set(mT.z, 0, -mT.x);
+      mP.addScaledVector(mR, c.side * 12.5);
+      const pole = new THREE.Mesh(poleGeo, poleMat);
+      pole.position.set(mP.x, 1.5, mP.z);
+      pole.castShadow = true;
+      const head = new THREE.Mesh(headGeo, headMat);
+      head.position.set(mP.x, 3.15, mP.z);
+      curve.getPointAt((((c.u - 0.01) % 1) + 1) % 1, mL);
+      mL.y = 1.9;
+      head.lookAt(mL);
+      masts.add(pole, head);
+    }
+    group.add(masts);
+  }
+
   return {
     group,
     curve,
@@ -656,6 +690,8 @@ export function createTrack(scene, layout) {
     startQuat,
     startTangent: startTan,
     racingLine: line,
+    // broadcast camera slots: one at every designed corner of the layout
+    corners: layout.corners,
     // surface (rallycross): u-space gravel zones + grip queries
     gravel: layout.gravel,
     surfaceAt: layout.surfaceAt,

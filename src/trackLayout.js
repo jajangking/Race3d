@@ -172,6 +172,66 @@ function controlPointUs(curve, pts) {
   return us;
 }
 
+/**
+ * Every designed corner of the layout: a run of consecutive control points
+ * turning the same way with chord turns of at least 5 degrees (a 180-degree
+ * hairpin built from 45-degree steps is one corner, a chicane's alternating
+ * bends stay separate). Each corner's mast side is decided geometrically:
+ * the outside is the side farther from a road point just past the apex,
+ * since the road bends away from the outside. Returns [{ u, side,
+ * strength }] sorted by u - one broadcast camera slot per corner.
+ */
+function trackCorners(curve, pts) {
+  const us = controlPointUs(curve, pts);
+  const N = pts.length;
+  const MIN = (5 * Math.PI) / 180;
+  const turns = new Array(N);
+  for (let i = 0; i < N; i++) {
+    const a = pts[(i + 1) % N].clone().sub(pts[i]);
+    const b = pts[(i + 2) % N].clone().sub(pts[(i + 1) % N]);
+    turns[i] =
+      a.lengthSq() < 1e-9 || b.lengthSq() < 1e-9
+        ? 0
+        : Math.atan2(a.x * b.z - a.z * b.x, a.x * b.x + a.z * b.z);
+  }
+  const out = [];
+  const A = new THREE.Vector3();
+  const T = new THREE.Vector3();
+  const R = new THREE.Vector3();
+  const F = new THREE.Vector3();
+  const CAM = new THREE.Vector3();
+  const wrap = (u) => ((u % 1) + 1) % 1;
+  let i = 0;
+  while (i < N) {
+    if (Math.abs(turns[i]) < MIN) {
+      i++;
+      continue;
+    }
+    let j = i;
+    let peak = i;
+    while (j + 1 < N && Math.abs(turns[j + 1]) >= MIN && Math.sign(turns[j + 1]) === Math.sign(turns[i])) {
+      j++;
+      if (Math.abs(turns[j]) > Math.abs(turns[peak])) peak = j;
+    }
+    const u = us[peak];
+    curve.getPointAt(u, A);
+    curve.getTangentAt(u, T);
+    T.y = 0;
+    T.normalize();
+    R.set(T.z, 0, -T.x);
+    curve.getPointAt(wrap(u + 0.015), F);
+    const dOut = CAM.copy(A).addScaledVector(R, 12.5).distanceTo(F);
+    const dIn = CAM.copy(A).addScaledVector(R, -12.5).distanceTo(F);
+    out.push({
+      u,
+      side: dOut > dIn ? 1 : -1,
+      strength: Math.min(1, Math.abs(turns[peak]) / (Math.PI / 2)),
+    });
+    i = j + 1;
+  }
+  return out.sort((a, b) => a.u - b.u);
+}
+
 // ---------------------------------------------------------------- surfaces
 
 /** Grip of the gravel sections relative to tarmac (mu 1.45 -> ~1.04). */
@@ -227,7 +287,7 @@ function layoutTrack(name, label, curve, pts, gravelIdx = []) {
   };
   const isGravel = (u) => gravel.some(([a, b]) => gravelDepth(u, a, b, length) > 0);
 
-  return { name, label, curve, length, gravel, surfaceAt, isGravel };
+  return { name, label, curve, length, gravel, surfaceAt, isGravel, corners: trackCorners(curve, pts) };
 }
 
 export const TRACKS = {
