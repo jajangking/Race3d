@@ -104,6 +104,42 @@ export class AIDriver {
     this.stats = { recover: 0, right: 0, offTime: 0 };
   }
 
+  /**
+   * Point this driver at a different track (track selection: circuit vs
+   * rallycross). Re-derives the racing line / speed profile from the new
+   * layout and clears the transient race state that referenced the old one.
+   */
+  retarget(track) {
+    this.track = track;
+    this.curve = track.curve;
+    this.length = track.length;
+    this.line = buildRacingLine(track);
+    if (!track._aiSamples) {
+      const n = 400;
+      const samples = new Array(n);
+      for (let i = 0; i < n; i++) samples[i] = track.curve.getPointAt(i / n);
+      track._aiSamples = samples;
+    }
+    this._samples = track._aiSamples;
+    this.u = 0;
+    this.mode = 'race';
+    this.recoverTime = 0;
+    this.recoverPhase = 'reverse';
+    this.reverseTime = 0;
+    this.stuckTime = 0;
+    this.blockedTime = 0;
+    this.idleTime = 0;
+    this.flippedTime = 0;
+    this.avoidSide = 0;
+    this.avoidHold = 0;
+    this._otSide = 0;
+    this._otCooldown = 0;
+    this._following = false;
+    this._closing = 0;
+    this.startMergeDone = false;
+    this.car.grip = 1;
+  }
+
   _getNearestU(pos) {
     const samples = this._samples;
     const n = samples.length;
@@ -284,6 +320,8 @@ export class AIDriver {
 
     // find nearest on track
     this.u = this._getNearestU(pos);
+    // surface grip (rallycross gravel): refreshed from the track layout
+    if (this.track.surfaceAt) this.car.grip = this.track.surfaceAt(this.u);
     this.curve.getPointAt(this.u, _pos);
     this.curve.getTangentAt(this.u, _tan);
     _tan.y = 0;
@@ -813,7 +851,10 @@ export class AIDriver {
     // Never ask the front tyres for more lateral force than they can make.
     // At 150 km/h a two-degree steering error is already a lot, and the old
     // pure-pursuit loop would command six degrees and slide the car wide.
-    const kMax = (1.55 * 9.81) / Math.max(speed * speed, 1);
+    // The cap scales with the SURFACE: on gravel the front tyres make ~72%
+    // of the tarmac force, so demanding tarmac curvature there breaks the
+    // front loose and the car understeers wide onto the grass.
+    const kMax = (1.55 * this.car.grip * 9.81) / Math.max(speed * speed, 1);
     const kCmd = Math.tan(clamp(desiredAngle, -1.4, 1.4)) / CAR.wheel.wheelbase;
     desiredAngle = Math.atan(CAR.wheel.wheelbase * clamp(kCmd, -kMax, kMax));
     desiredAngle = clamp(desiredAngle, -maxAngle * 0.9, maxAngle * 0.9);
@@ -868,6 +909,14 @@ export class AIDriver {
       throttle = clamp(0.4 + speedErr / 20, 0.25, 0.65);
     }
     if (this.spawnGrace < 1.2 && speedKmh < 35) throttle = Math.min(throttle, 0.7);
+
+    // Power-understeer counter (mixed surface): when the car is being pushed
+    // outside the planned line, lifting the throttle restores the front tyres
+    // before the steering can do any more good. The circuit AI holds its line
+    // within ~1.5 m, so this stays dormant there; on the rallycross gravel
+    // exits it is what keeps the nose from wandering onto the grass.
+    const xErr = Math.abs(crossTrack);
+    if (xErr > 2.3) throttle *= clamp(1 - (xErr - 2.3) * 0.4, 0.2, 1);
 
     // if way off track laterally, brake a bit
     if (Math.abs(lateral) > 5.8) {

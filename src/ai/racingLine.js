@@ -243,16 +243,31 @@ export function buildRacingLine(track) {
     tanZ[i] = dz * inv;
   }
 
+  // Gravel sections (rallycross) allow less lateral grip, so the corner
+  // speed there is lower and the backwards braking pass below bleeds the
+  // extra braking into the approach automatically. Tracks can also carry a
+  // `cornerGripMargin` (< 1): the steady-state 0.9 g target is a lower
+  // bound, and on a tight mixed-surface circuit the TRANSIENTS (steering
+  // rate, load transfer while braking into the gravel) burn extra margin,
+  // so the AI runs 18% inside the limit there or it slides wide.
+  const surfaceAt = track.surfaceAt || null;
+  const margin = track.cornerGripMargin ?? 1;
   const speed = new Float32Array(N);
   for (let i = 0; i < N; i++) {
-    const vCorner = Math.sqrt((LAT_GRIP_G * 9.81) / Math.max(curvature[i], 1e-6));
+    const g = surfaceAt ? surfaceAt(i / N) : 1;
+    const vCorner = Math.sqrt((LAT_GRIP_G * g * margin * 9.81) / Math.max(curvature[i], 1e-6));
     speed[i] = Math.min(MAX_SPEED_MS, vCorner);
   }
   // Two passes because the loop is closed and braking can span the start line.
+  // Brake distance scales with surface grip: on gravel the tyres make ~72%
+  // of the tarmac braking force, so the approach speed must be shed earlier
+  // (tarmac is unchanged at grip = 1).
   for (let pass = 0; pass < 2; pass++) {
     for (let i = N - 1; i >= 0; i--) {
       const next = speed[(i + 1) % N];
-      speed[i] = Math.min(speed[i], Math.sqrt(next * next + 2 * BRAKE_MS2 * ds));
+      const g = surfaceAt ? surfaceAt(i / N) : 1;
+      const brake = BRAKE_MS2 * g;
+      speed[i] = Math.min(speed[i], Math.sqrt(next * next + 2 * brake * ds));
     }
   }
 

@@ -12,8 +12,8 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>RACE3D — raycast vehicle sim</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <script type="module" crossorigin src="./assets/index-BCvd37VG.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-epONTebK.css">
+    <script type="module" crossorigin src="./assets/index-DLEnztvj.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-uNHJlksu.css">
   </head>
   <body>
     <canvas id="scene"></canvas>
@@ -151,6 +151,8 @@
           <b>AI vs AI</b> from the broadcast cameras. Or step into
           <b>KOTA</b>: drive car #1 through a grid of city streets shared with
           ten autonomous cars — lane keeping, traffic lights, turn signals and all.
+          Or grab a gravel set: <b>RALLYCROSS</b> is a short, twisty circuit
+          with mixed tarmac/gravel surfaces — grip drops ~30% on the gravel.
         </p>
         <dl class="specs">
           <div><dt>ENGINE</dt><dd>3.0 inline-6 · 378 Nm</dd></div>
@@ -158,9 +160,11 @@
           <div><dt>MASS</dt><dd>1280 kg</dd></div>
           <div><dt>TYRES</dt><dd>Semi-slick · µ 1.45</dd></div>
           <div><dt>CIRCUIT</dt><dd>1.7 km · 10 corners · pit lane</dd></div>
+          <div><dt>RALLYCROSS</dt><dd>1.4 km · mixed tarmac + gravel</dd></div>
         </dl>
         <div class="intro__modes">
           <button class="intro__go" id="start" type="button">DRIVE</button>
+          <button class="intro__go intro__go--rally" id="start-rally" type="button">RALLYCROSS · ASPAL + GRAVEL</button>
           <button class="intro__go intro__go--watch" id="start-watch" type="button">AI RACE · SPECTATE</button>
           <button class="intro__go intro__go--city" id="start-city" type="button">KOTA · DRIVING OTONOM</button>
         </div>
@@ -177,7 +181,7 @@
     </div>
 
     <!-- build tag: proves which bundle is actually loaded (cache check) -->
-    <div class="build-tag" id="buildTag">BUILD v11 · KOTA 46 mobil + audio hemat</div>
+    <div class="build-tag" id="buildTag">BUILD v12 · RALLYCROSS + KOTA 46 mobil</div>
 
   </body>
 </html>

@@ -10,7 +10,7 @@ import { buildRacingLine } from '../ai/racingLine.js';
  * blue), used to line the pit boxes and the building facade so the pit lane
  * actually belongs to the teams on screen.
  */
-export function createScenery(scene, track, teamColors = []) {
+export function createScenery(scene, track, teamColors = [], opts = {}) {
   const group = new THREE.Group();
   scene.add(group);
 
@@ -18,9 +18,11 @@ export function createScenery(scene, track, teamColors = []) {
   const length = track.length;
   const line = buildRacingLine(track);
   const start = track.start;
+  // skipPit: the rallycross venue has no pit lane / building / grandstands
+  const pit = !opts.skipPit;
 
   /* ------------------------------------------------------------- pit area */
-  {
+  if (pit) {
     const pitPts = [
       new THREE.Vector3(-152, 0, 174.5),
       new THREE.Vector3(-140, 0, 196),
@@ -226,11 +228,13 @@ export function createScenery(scene, track, teamColors = []) {
     group.add(g);
   }
 
-  grandstand(36, 14, 10, 306, 92, Math.PI / 2);    // inside of T1
-  grandstand(44, 13, 10, -66, -196, Math.PI);      // outside of the chicane
+  if (pit) {
+    grandstand(36, 14, 10, 306, 92, Math.PI / 2);  // inside of T1
+    grandstand(44, 13, 10, -66, -196, Math.PI);    // outside of the chicane
+  }
 
-  // timing tower next to the start/finish
-  {
+  // timing tower next to the start/finish (circuit venues only)
+  if (pit) {
     const c = document.createElement('canvas');
     c.width = 256;
     c.height = 512;
@@ -358,8 +362,10 @@ export function createScenery(scene, track, teamColors = []) {
     }
   }
 
-  /* ---------------------------------------------------- distant hills */
-  {
+  // Track-independent environment (distant hills + sun disc): mounted on the
+  // scene, not the venue group, so both the circuit and the rallycross
+  // share one sky and building the rally scenery does not double it.
+  if (!scene.userData.hills) {
     const hillMat = new THREE.MeshLambertMaterial({ color: 0x6e7d66 });
     const hills = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), hillMat, 26);
     const m = new THREE.Matrix4();
@@ -376,11 +382,11 @@ export function createScenery(scene, track, teamColors = []) {
       );
       hills.setMatrixAt(i, m);
     }
-    group.add(hills);
+    scene.add(hills);
+    scene.userData.hills = hills;
   }
 
-  /* ------------------------------------------------------------- sun */
-  {
+  if (!scene.userData.sunSprite) {
     const c = document.createElement('canvas');
     c.width = c.height = 256;
     const g = c.getContext('2d');
@@ -400,7 +406,8 @@ export function createScenery(scene, track, teamColors = []) {
     sprite.position.copy(d);
     sprite.scale.set(560, 560, 1);
     if (scene.userData.sky) scene.userData.sky.add(sprite);
-    else group.add(sprite);
+    else scene.add(sprite);
+    scene.userData.sunSprite = sprite;
   }
 
   return group;

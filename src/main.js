@@ -18,6 +18,7 @@ import { EngineAudio } from './audio/engineAudio.js';
 import { createCity } from './city/cityRender.js';
 import { CITY, createCityLights, nodeIndex, cityBuildings, nearestRoadPoint } from './city/cityLayout.js';
 import { CityDriver } from './city/cityDriver.js';
+import { TRACKS } from './trackLayout.js';
 
 // ------------------------------------------------------------------ errors
 // Phones have no handy console: surface JS errors on-screen (bottom-left)
@@ -152,9 +153,16 @@ const OPPONENT_COLORS = [
 ];
 
 // --------------------------------------------------------------------- track
-const track = createTrack(scene);
+// Two selectable circuits: the all-tarmac CIRCUIT and the mixed-surface
+// RALLYCROSS (gravel sections with low grip). `track` always points at the
+// active one; the rally world is built lazily the first time it is picked,
+// so the intro screen stays cheap.
+const circuitTrack = createTrack(scene, TRACKS.circuit);
+let track = circuitTrack;
+let rallyTrack = null;
+let rallyScenery = null;
 // keep the group: city mode hides the whole race world
-const sceneryGroup = createScenery(scene, track, [0x1f6bff, ...OPPONENT_COLORS]);
+const sceneryGroup = createScenery(scene, circuitTrack, [0x1f6bff, ...OPPONENT_COLORS]);
 
 // ----------------------------------------------------------------------- car
 const spawn = new THREE.Vector3(track.start.x, 0.46, track.start.z);
@@ -546,11 +554,42 @@ const intro = document.getElementById('intro');
 const startBtn = document.getElementById('start');
 const startWatchBtn = document.getElementById('start-watch');
 
+/**
+ * Switch the race world to the rallycross circuit: build its visuals on
+ * first use, retarget every AI to the new racing line / braking profile
+ * (the gravel sections are baked into it), and park the field on the new
+ * grid. The circuit world stays alive (hidden) so nothing is rebuilt.
+ */
+function activateRally() {
+  if (!rallyTrack) {
+    rallyTrack = createTrack(scene, TRACKS.rally);
+    // no pit lane / building / grandstands at the RX venue, but the
+    // tyre barriers + trees follow the new curve
+    rallyScenery = createScenery(scene, rallyTrack, [0x1f6bff, ...OPPONENT_COLORS], {
+      skipPit: true,
+    });
+  }
+  track = rallyTrack;
+  circuitTrack.group.visible = false;
+  sceneryGroup.visible = false;
+  rallyTrack.group.visible = true;
+  rallyScenery.visible = true;
+  for (const o of opponents) o.driver.retarget(rallyTrack);
+  chase.track = rallyTrack;
+  spectator.track = rallyTrack;
+  // standing start on the rally grid (u = 0 = the new start line)
+  const slot = gridPose(0, 0, 0);
+  car.reset(slot.pos, slot.q);
+  car.grip = 1;
+  playerU = 0;
+}
+
 function begin(mode = 'drive') {
   if (started) return;
   started = true;
   spectate = mode === 'spectate';
   cityMode = mode === 'city';
+  const rallyMode = mode === 'rally';
   // this call comes from a click/touch - the moment the browser lets audio in
   engineAudio.start();
   if (intro) intro.classList.add('is-hidden');
@@ -562,6 +601,7 @@ function begin(mode = 'drive') {
     clock.last = performance.now();
     return;
   }
+  if (rallyMode) activateRally();
   if (spectate) {
     // the player's car becomes the 11th AI car: same Vehicle, same driver
     // class, just a different paint. The field races itself.
@@ -602,6 +642,7 @@ function bindStart(el, mode) {
 bindStart(startBtn, 'drive');
 bindStart(startWatchBtn, 'spectate');
 bindStart(document.getElementById('start-city'), 'city');
+bindStart(document.getElementById('start-rally'), 'rally');
 input.on('start', () => begin('drive'));
 
 // handy for headless screenshots / automated checks
@@ -611,7 +652,7 @@ const autoSteer = Number(params.get('steer') ?? 0);
 if (params.has('auto')) {
   const am = params.get('mode');
   setTimeout(
-    () => begin(am === 'spectate' ? 'spectate' : am === 'city' ? 'city' : 'drive'),
+    () => begin(am === 'spectate' ? 'spectate' : am === 'city' ? 'city' : am === 'rally' ? 'rally' : 'drive'),
     30,
   );
 }
@@ -653,6 +694,50 @@ function trackLaunch(dt, tm) {
 // ------------------------------------------------------------------ respawn
 const _nearest = new THREE.Vector3();
 const _tan = new THREE.Vector3();
+
+// per-frame surface grip for the player's car: an incremental search around
+// the last known u on the track sample cache (cheaper than nearestOnTrack,
+// which the R button alone can afford). The AI cars refresh their grip
+// inside AIDriver.update.
+let playerU = 0;
+const _pPos = new THREE.Vector3();
+function playerSurfaceGrip() {
+  const samples = track._aiSamples;
+  if (!samples) return 1;
+  const t = car.body.translation();
+  _pPos.set(t.x, 0, t.z);
+  const n = samples.length;
+  let bestD = Infinity;
+  let bestIdx = 0;
+  const center = Math.floor(playerU * n);
+  for (let k = -60; k <= 60; k++) {
+    const idx = (center + k + n) % n;
+    const s = samples[idx];
+    const dx = s.x - _pPos.x;
+    const dz = s.z - _pPos.z;
+    const d = dx * dx + dz * dz;
+    if (d < bestD) {
+      bestD = d;
+      bestIdx = idx;
+    }
+  }
+  if (bestD > 90 * 90) {
+    // far off the road: global search
+    bestD = Infinity;
+    for (let idx = 0; idx < n; idx++) {
+      const s = samples[idx];
+      const dx = s.x - _pPos.x;
+      const dz = s.z - _pPos.z;
+      const d = dx * dx + dz * dz;
+      if (d < bestD) {
+        bestD = d;
+        bestIdx = idx;
+      }
+    }
+  }
+  playerU = bestIdx / n;
+  return track.surfaceAt ? track.surfaceAt(playerU) : 1;
+}
 
 function nearestOnTrack(pos) {
   // coarse arc-length search; the track is ~1.3 km so 600 samples is plenty
@@ -852,6 +937,9 @@ function frame(now) {
       steps++;
     }
     if (steps === 8) accumulator = 0;
+
+    // surface grip under the player's tyres (rallycross gravel)
+    if (!cityMode) car.grip = playerSurfaceGrip();
 
     trackLaunch(dt, car.telemetry);
 

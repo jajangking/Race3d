@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { buildRacingLine } from '../ai/racingLine.js';
-import { buildTrackCurve } from '../trackLayout.js';
+import { GRIP_GRAVEL } from '../trackLayout.js';
 
 /**
  * Circuit + road surface. The physics is a single flat ground plane;
@@ -12,9 +12,10 @@ export const ROAD_HALF_WIDTH = 7;
 
 /**
  * Flat ribbon following `curve`, offset sideways, with a constant width.
- * Returns a geometry in world space at height y.
+ * Returns a geometry in world space at height y. Open ribbons can cover a
+ * u-range [uFrom, uTo] (used for the gravel sections on the rallycross).
  */
-export function ribbon(curve, segments, offset, width, y, tile = 0, closed = true) {
+export function ribbon(curve, segments, offset, width, y, tile = 0, closed = true, uFrom = 0, uTo = 1) {
   const pos = [];
   const uv = [];
   const nor = [];
@@ -26,7 +27,7 @@ export function ribbon(curve, segments, offset, width, y, tile = 0, closed = tru
   let prev = null;
 
   for (let i = 0; i <= segments; i++) {
-    const u = closed ? (i / segments) % 1 : i / segments;
+    const u = closed ? (i / segments) % 1 : uFrom + (uTo - uFrom) * (i / segments);
     curve.getPointAt(u, p);
     curve.getTangentAt(u, t);
     side.set(t.z, 0, -t.x).normalize();
@@ -133,6 +134,54 @@ function asphaltTexture() {
       ? `rgba(0, 0, 0, ${0.04 + Math.random() * 0.07})`
       : `rgba(140, 145, 152, ${0.02 + Math.random() * 0.03})`;
     g.fillRect(x, 0, w, 512);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+/** Gravel: fine tan dust with mixed pebbles - reads clearly as "not
+ *  tarmac" from the chase cam and from the 2 m bumper cam. */
+function gravelTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#9a7d55';
+  g.fillRect(0, 0, 512, 512);
+  // soft tonal patches (compacted vs loose gravel)
+  for (let i = 0; i < 420; i++) {
+    const light = Math.random() > 0.5;
+    const a = Math.random() * (light ? 0.10 : 0.14);
+    g.fillStyle = light ? `rgba(222, 200, 160, ${a})` : `rgba(96, 74, 48, ${a})`;
+    const s = 8 + Math.random() * 42;
+    g.fillRect(Math.random() * 512, Math.random() * 512, s, s * (0.4 + Math.random() * 0.9));
+  }
+  // aggregate: thousands of tiny 1-2 px grains, brown/grey/white mix
+  for (let i = 0; i < 14000; i++) {
+    const r = Math.random();
+    const a = 0.25 + Math.random() * 0.5;
+    g.fillStyle = r < 0.4
+      ? `rgba(64, 48, 32, ${a})`
+      : r < 0.75
+        ? `rgba(126, 100, 66, ${a})`
+        : `rgba(226, 210, 180, ${a})`;
+    const s = 1 + Math.random() * 1.8;
+    g.fillRect(Math.random() * 512, Math.random() * 512, s, s);
+  }
+  // a few distinct pebbles
+  for (let i = 0; i < 260; i++) {
+    const r = 1.2 + Math.random() * 2.4;
+    const shade = 90 + Math.floor(Math.random() * 120);
+    g.fillStyle = `rgba(${shade + 30}, ${shade + 10}, ${Math.max(30, shade - 40)}, 0.75)`;
+    g.beginPath();
+    g.ellipse(
+      Math.random() * 512, Math.random() * 512,
+      r, r * (0.6 + Math.random() * 0.5),
+      Math.random() * Math.PI, 0, Math.PI * 2,
+    );
+    g.fill();
   }
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
@@ -257,7 +306,45 @@ function startLightsTexture() {
 
 /* -------------------------------------------------------------- track */
 
-export function createTrack(scene) {
+/**
+ * Asphalt u-ranges (the complement of the gravel zones), found by sampling
+ * `isGravel` around the lap. One full wrap is scanned from a sample that is
+ * known to be asphalt, so ranges that cross u = 0 come back split as
+ * [a, 1] + [0, b].
+ */
+function asphaltRanges(layout) {
+  if (!layout.gravel || !layout.gravel.length) return [[0, 1]];
+  const N = 2400;
+  const flags = new Uint8Array(N);
+  for (let i = 0; i < N; i++) flags[i] = layout.isGravel(i / N) ? 1 : 0;
+  let s = 0;
+  while (s < N && flags[s]) s++;
+  const ranges = [];
+  for (let k = 1; k <= N; k++) {
+    const i = (s + k) % N;
+    if (!flags[i]) {
+      const prev = (s + k - 1) % N;
+      if (!ranges.length || flags[prev]) ranges.push([i / N, 0]);
+      ranges[ranges.length - 1][1] = ((i + 1) / N) % 1;
+    }
+  }
+  const out = [];
+  for (const [a, b] of ranges) {
+    if (a <= b) out.push([a, b]);
+    else {
+      out.push([a, 1]);
+      out.push([0, b]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Build the circuit world for a track layout (TRACKS.circuit or
+ * TRACKS.rally). Returns the same shape for both; the rally adds gravel
+ * ribbons + a per-zone surface query (used for tyre grip).
+ */
+export function createTrack(scene, layout) {
   const group = new THREE.Group();
   scene.add(group);
 
@@ -273,8 +360,8 @@ export function createTrack(scene) {
   group.add(ground);
 
   // ------------------------------------------------------------------ road
-  const curve = buildTrackCurve();
-  const length = curve.getLength();
+  const curve = layout.curve;
+  const length = layout.length;
   const segments = Math.min(1600, Math.max(500, Math.round(length / 2.2)));
 
   const asphalt = asphaltTexture();
@@ -291,6 +378,32 @@ export function createTrack(scene) {
   );
   road.receiveShadow = true;
   group.add(road);
+
+  // gravel sections (rallycross only): low-grip surface painted over the
+  // tarmac, one open ribbon per zone. The asphalt ribbon stays underneath
+  // everywhere, so a gravel zone is the only thing that changes the surface.
+  if (layout.gravel.length) {
+    const gTex = gravelTexture();
+    const gMat = new THREE.MeshStandardMaterial({
+      map: gTex,
+      roughness: 1.0,
+      metalness: 0,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    for (const [a, b] of layout.gravel) {
+      const span = (b - a + 1) % 1;
+      if (span < 0.005) continue;
+      const segs = Math.max(16, Math.round(segments * span));
+      const g = new THREE.Mesh(
+        ribbon(curve, segs, 0, ROAD_HALF_WIDTH * 2, 0.0215, 7, false, a, b),
+        gMat,
+      );
+      g.receiveShadow = true;
+      group.add(g);
+    }
+  }
 
   // shared track plan (racing line + curvature profile)
   const track = { curve, length };
@@ -358,24 +471,28 @@ export function createTrack(scene) {
     group.add(line);
   }
 
-  // centre dashes
+  // centre dashes - only on tarmac; the gravel sections have no painted
+  // centre line (a rallycross gravel patch reads as gravel, not asphalt).
   {
     const dashTex = dashTexture();
-    const dash = new THREE.Mesh(
-      ribbon(curve, segments, 0, 0.14, 0.032, 9),
-      new THREE.MeshStandardMaterial({
-        map: dashTex,
-        transparent: true,
-        opacity: 0.45,
-        roughness: 0.8,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -3,
-        polygonOffsetUnits: -3,
-      }),
-    );
-    dash.renderOrder = 2;
-    group.add(dash);
+    const dashMat = new THREE.MeshStandardMaterial({
+      map: dashTex,
+      transparent: true,
+      opacity: 0.45,
+      roughness: 0.8,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
+    });
+    for (const [a, b] of asphaltRanges(layout)) {
+      const span = (b - a + 1) % 1;
+      if (span < 0.01) continue; // skip stubs / the degenerate zero-length run
+      const segs = Math.max(8, Math.round(segments * span));
+      const dash = new THREE.Mesh(ribbon(curve, segs, 0, 0.14, 0.032, 9, false, a, b), dashMat);
+      dash.renderOrder = 2;
+      group.add(dash);
+    }
   }
 
   // ------------------------------------------------------- start/finish line
@@ -539,5 +656,10 @@ export function createTrack(scene) {
     startQuat,
     startTangent: startTan,
     racingLine: line,
+    // surface (rallycross): u-space gravel zones + grip queries
+    gravel: layout.gravel,
+    surfaceAt: layout.surfaceAt,
+    isGravel: layout.isGravel,
+    gripGravel: GRIP_GRAVEL,
   };
 }

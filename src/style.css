@@ -903,6 +903,17 @@ body.is-spectate .hud__bottom {
   box-shadow: 0 16px 40px rgba(30, 90, 255, 0.4);
 }
 
+/* rallycross button: tarmac + gravel palette */
+.intro__go--rally {
+  background: linear-gradient(135deg, #b07a3a, #6e4a22);
+  box-shadow: 0 12px 32px rgba(176, 122, 58, 0.32);
+  font-size: 11px;
+}
+
+.intro__go--rally:hover {
+  box-shadow: 0 16px 40px rgba(176, 122, 58, 0.46);
+}
+
 /* ------------------------------------------------------------- city mode */
 .intro__go--city {
   background: linear-gradient(135deg, #0e9d78, #0a5c48);
