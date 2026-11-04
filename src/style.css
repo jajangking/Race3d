@@ -784,8 +784,14 @@ body.is-spectate .hud__bottom {
   inset: 0;
   z-index: 20;
   display: grid;
-  place-items: center;
   padding: 20px;
+  /* The card is taller than a phone viewport: make THIS scroll (the page
+     itself stays overflow:hidden for the game). touch-action:pan-y is
+     required - html/body carry touch-action:none for the controls. */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
   background: radial-gradient(circle at 50% 30%, rgba(20, 26, 36, 0.72), rgba(4, 6, 9, 0.94));
   backdrop-filter: blur(7px);
   transition: opacity 0.5s ease, visibility 0.5s ease;
@@ -798,6 +804,9 @@ body.is-spectate .hud__bottom {
 }
 
 .intro__card {
+  /* margin:auto in a scroll container = centered when the card fits,
+     top-aligned (fully reachable) when it overflows */
+  margin: auto;
   width: min(560px, 100%);
   padding: 34px 34px 26px;
   border-radius: 22px;
@@ -1113,9 +1122,44 @@ body.is-city #standings {
   display: none !important;
 }
 
-@media (max-width: 460px) {
+/* Phone-sized intro: compact so all five mode buttons stay visible in
+   three rows (single column used to make the card 1 m+ tall). The
+   scrollable .intro above is the safety net on very short viewports. */
+@media (max-width: 520px) {
+  .intro {
+    padding: 10px;
+  }
+  .intro__card {
+    padding: 22px 18px 16px;
+    border-radius: 18px;
+  }
+  .intro h1 {
+    font-size: clamp(34px, 11vw, 48px);
+  }
+  .intro__sub {
+    font-size: 12.5px;
+    line-height: 1.5;
+    margin-bottom: 14px;
+  }
+  .specs {
+    margin-bottom: 16px;
+  }
+  .specs > div {
+    padding: 7px 9px;
+  }
+  .specs dd {
+    font-size: 11.5px;
+  }
   .intro__modes {
-    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .intro__go {
+    padding: 12px 10px;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+  }
+  .intro__keys {
+    margin-top: 14px;
   }
 }
 
