@@ -50,6 +50,21 @@ function setPose(body, u) {
   body._q.setFromUnitVectors(FZ, _f);
 }
 
+// deterministic runs: pin the PRNG. The director's epsilon-greedy picks
+// and the shot timers draw Math.random - an unlucky sequence must not be
+// able to flip the suite's verdict (the heli suite does the same).
+const realRandom = Math.random;
+function mulberry32(a) {
+  return function () {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+Math.random = mulberry32(0x5eed42);
+
 // mock localStorage
 const store = {};
 globalThis.localStorage = {
@@ -574,5 +589,6 @@ console.log('G: user focus position - the whole feed revolves around that car');
     `a lone leader is a SINGLE shot - the heli returns to the tight rear-quarter (anchor p90 ${soP90.toFixed(0)} m)`);
 }
 
+Math.random = realRandom;
 console.log(failures === 0 ? '\nALL DIRECTOR TESTS PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
