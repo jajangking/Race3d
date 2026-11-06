@@ -606,14 +606,222 @@ body.is-touch .touch {
 
 /* remove old round pedal styles not needed */
 
+/* ---------------------------------------------------------- spectator UI */
+/* hidden unless body.is-spectate (AI vs AI mode) */
+
+.spectate-ui {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+body.is-spectate .spectate-ui {
+  display: flex;
+}
+
+.shots {
+  display: none;
+  gap: 4px;
+  margin-top: 6px;
+}
+.shots--on {
+  display: flex;
+}
+.shot {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 9px;
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.shot:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.shot--on {
+  background: var(--accent, #e23b2e);
+  border-color: var(--accent, #e23b2e);
+  color: #fff;
+}
+.cammode {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 6px 14px 6px 16px;
+  border-radius: 999px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+.spectate-ui__btns {
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.sbtn {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  transition: border-color 0.12s ease, background 0.12s ease, transform 0.08s ease;
+}
+
+.sbtn:hover {
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.sbtn:active {
+  transform: scale(0.95);
+}
+
+/* spectator leaderboard */
+.standings {
+  position: fixed;
+  left: calc(14px + env(safe-area-inset-left));
+  bottom: calc(14px + env(safe-area-inset-bottom));
+  z-index: 5;
+  width: 178px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(10px);
+  font-family: var(--mono);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.standings__head,
+.standings__row {
+  display: grid;
+  grid-template-columns: 22px 10px 1fr 42px;
+  gap: 6px;
+  align-items: center;
+}
+
+.standings__head {
+  color: var(--dim);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  padding: 0 6px 5px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+
+.standings__row {
+  line-height: 1.75;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-variant-numeric: tabular-nums;
+  color: #c7d1dd;
+}
+
+.standings__row.is-focus {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.standings__pos {
+  color: var(--dim);
+}
+
+.standings__row.is-focus .standings__pos {
+  color: var(--warn);
+}
+
+.standings__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.25);
+}
+
+.standings__name {
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+.standings__row.is-player .standings__name {
+  color: var(--accent-soft);
+}
+
+.standings__lap {
+  color: var(--dim);
+  font-size: 9px;
+  text-align: right;
+}
+
+/* cinematic letterbox bars */
+body.is-cinematic::before,
+body.is-cinematic::after {
+  content: '';
+  position: fixed;
+  left: 0;
+  right: 0;
+  height: 8vh;
+  background: #000;
+  z-index: 4;
+  pointer-events: none;
+}
+
+body.is-cinematic::before {
+  top: 0;
+}
+
+body.is-cinematic::after {
+  bottom: 0;
+}
+
+/* pedals are useless while spectating */
+body.is-spectate .touch {
+  display: none !important;
+}
+
+body.is-spectate .hud__bottom {
+  left: auto;
+  right: calc(14px + env(safe-area-inset-right));
+  bottom: calc(14px + env(safe-area-inset-bottom));
+}
+
 /* ----------------------------------------------------------------- intro */
 .intro {
   position: fixed;
   inset: 0;
   z-index: 20;
   display: grid;
-  place-items: center;
   padding: 20px;
+  /* The card is taller than a phone viewport: make THIS scroll (the page
+     itself stays overflow:hidden for the game). touch-action:pan-y is
+     required - html/body carry touch-action:none for the controls. */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
   background: radial-gradient(circle at 50% 30%, rgba(20, 26, 36, 0.72), rgba(4, 6, 9, 0.94));
   backdrop-filter: blur(7px);
   transition: opacity 0.5s ease, visibility 0.5s ease;
@@ -626,6 +834,9 @@ body.is-touch .touch {
 }
 
 .intro__card {
+  /* margin:auto in a scroll container = centered when the card fits,
+     top-aligned (fully reachable) when it overflows */
+  margin: auto;
   width: min(560px, 100%);
   padding: 34px 34px 26px;
   border-radius: 22px;
@@ -690,6 +901,12 @@ body.is-touch .touch {
   font-weight: 600;
 }
 
+.intro__modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
 .intro__go {
   width: 100%;
   padding: 15px;
@@ -712,6 +929,268 @@ body.is-touch .touch {
 
 .intro__go:active {
   transform: translateY(1px) scale(0.995);
+}
+
+/* spectator / AI vs AI button */
+.intro__go--watch {
+  background: linear-gradient(135deg, #2a6bff, #123f9b);
+  box-shadow: 0 12px 32px rgba(30, 90, 255, 0.28);
+  font-size: 11px;
+}
+
+.intro__go--watch:hover {
+  box-shadow: 0 16px 40px rgba(30, 90, 255, 0.4);
+}
+
+/* rallycross button: tarmac + gravel palette */
+.intro__go--rally {
+  background: linear-gradient(135deg, #b07a3a, #6e4a22);
+  box-shadow: 0 12px 32px rgba(176, 122, 58, 0.32);
+  font-size: 11px;
+}
+
+.intro__go--rally:hover {
+  box-shadow: 0 16px 40px rgba(176, 122, 58, 0.46);
+}
+
+/* ------------------------------------------------------------- city mode */
+.intro__go--city {
+  background: linear-gradient(135deg, #0e9d78, #0a5c48);
+  box-shadow: 0 12px 32px rgba(14, 157, 120, 0.3);
+  font-size: 11px;
+}
+
+.intro__go--city:hover {
+  box-shadow: 0 16px 40px rgba(14, 157, 120, 0.44);
+}
+
+.city-cam {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  display: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 6px 14px 6px 16px;
+  border-radius: 999px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+body.is-city .city-cam {
+  display: block;
+}
+
+/* hidden unless body.is-city (autonomous city mode) */
+.city-ui {
+  position: fixed;
+  left: 50%;
+  bottom: calc(14px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 9;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+  width: min(340px, calc(100vw - 24px));
+}
+
+body.is-city .city-ui {
+  display: flex;
+}
+
+/* on phones the card lifts above the steering slider + pedal bar, so the
+   pedals stay reachable while the nav info stays visible (city mode is
+   driven, not watched) */
+body.is-city.is-touch .city-ui {
+  bottom: calc(206px + env(safe-area-inset-bottom));
+}
+
+.city-ui__card {
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 14px 12px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+}
+
+.city-ui__nav {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.city-ui__turn {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--ink);
+}
+
+.city-ui__turn.is-turn {
+  color: #ffb020;
+}
+
+.city-ui__dist {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.city-ui__dest {
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--dim);
+}
+.city-ui__car {
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--amber, #ffb300);
+}
+
+.city-ui__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.city-ui__speedwrap {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.city-ui__speed {
+  font-family: var(--mono);
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.city-ui__unit {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--dim);
+}
+
+.city-ui__light {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #2a2d31;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.city-ui__light.is-green {
+  background: #2fd97c;
+  box-shadow: 0 0 10px rgba(47, 217, 124, 0.8);
+}
+
+.city-ui__light.is-yellow {
+  background: #ffc21a;
+  box-shadow: 0 0 10px rgba(255, 194, 26, 0.8);
+}
+
+.city-ui__light.is-red {
+  background: #ff4438;
+  box-shadow: 0 0 10px rgba(255, 68, 56, 0.8);
+}
+
+.city-ui__btns {
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.sbtn--back {
+  border-color: rgba(255, 130, 96, 0.5);
+}
+
+/* race-only UI that does not make sense in city mode */
+body.is-city .touch {
+  display: none !important;
+}
+
+body.is-city #speedo {
+  display: none;
+}
+
+body.is-city .timing {
+  display: none;
+}
+
+body.is-city #btn-cam-hud {
+  display: none;
+}
+
+body.is-city #respawn {
+  display: none;
+}
+
+body.is-city .assists {
+  display: none;
+}
+
+body.is-city #standings {
+  display: none !important;
+}
+
+/* Phone-sized intro: compact so all five mode buttons stay visible in
+   three rows (single column used to make the card 1 m+ tall). The
+   scrollable .intro above is the safety net on very short viewports. */
+@media (max-width: 520px) {
+  .intro {
+    padding: 10px;
+  }
+  .intro__card {
+    padding: 22px 18px 16px;
+    border-radius: 18px;
+  }
+  .intro h1 {
+    font-size: clamp(34px, 11vw, 48px);
+  }
+  .intro__sub {
+    font-size: 12.5px;
+    line-height: 1.5;
+    margin-bottom: 14px;
+  }
+  .specs {
+    margin-bottom: 16px;
+  }
+  .specs > div {
+    padding: 7px 9px;
+  }
+  .specs dd {
+    font-size: 11.5px;
+  }
+  .intro__modes {
+    gap: 8px;
+  }
+  .intro__go {
+    padding: 12px 10px;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+  }
+  .intro__keys {
+    margin-top: 14px;
+  }
 }
 
 .intro__keys {
@@ -746,4 +1225,61 @@ kbd {
 
 @media (orientation: portrait) {
   /* keep portrait friendly */
+}
+
+/* ------------------------------------------------------------------ build */
+/* Small corner tag that proves which bundle is actually loaded. If this
+   badge is missing the browser is showing a cached old build -> hard refresh. */
+.build-tag {
+  position: fixed;
+  left: 8px;
+  bottom: 8px;
+  z-index: 99;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(8, 12, 18, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(140, 220, 160, 0.9);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ------------------------------------------------- touch port of keys ---- */
+/* TC / ESC pills are now tap toggles (port of T / Y keys) */
+.pill--tap {
+  appearance: none;
+  -webkit-appearance: none;
+  pointer-events: auto;
+  cursor: pointer;
+  font: inherit;
+  min-height: 28px;
+}
+.pill--tap:active {
+  transform: scale(0.94);
+}
+/* the HUD CAM button is redundant with the spectate UI's CAM in AI-race mode */
+body.is-spectate #btn-cam-hud {
+  display: none;
+}
+/* bigger touch targets on real phones */
+@media (pointer: coarse) {
+  .pill--tap {
+    min-height: 40px;
+    min-width: 48px;
+    font-size: 12px;
+    padding: 6px 12px;
+  }
+  .respawn {
+    min-height: 44px;
+    min-width: 48px;
+    font-size: 12px;
+  }
+  .sbtn {
+    min-height: 40px;
+    min-width: 56px;
+    font-size: 11px;
+  }
 }

@@ -1,13 +1,68 @@
 import * as THREE from 'three';
 import { buildRacingLine } from '../ai/racingLine.js';
+import { GRIP_GRAVEL } from '../trackLayout.js';
 
 /**
- * Circuit + environment. The physics is a single flat ground plane; everything
- * here is visual, which keeps the collider count at one and the frame rate high
- * on a phone.
+ * Circuit + road surface. The physics is a single flat ground plane;
+ * everything here is visual, which keeps the collider count at one and the
+ * frame rate high on a phone.
  */
 
 export const ROAD_HALF_WIDTH = 7;
+
+/**
+ * Flat ribbon following `curve`, offset sideways, with a constant width.
+ * Returns a geometry in world space at height y. Open ribbons can cover a
+ * u-range [uFrom, uTo] (used for the gravel sections on the rallycross).
+ */
+export function ribbon(curve, segments, offset, width, y, tile = 0, closed = true, uFrom = 0, uTo = 1) {
+  const pos = [];
+  const uv = [];
+  const nor = [];
+  const idx = [];
+  const p = new THREE.Vector3();
+  const t = new THREE.Vector3();
+  const side = new THREE.Vector3();
+  let dist = 0;
+  let prev = null;
+
+  for (let i = 0; i <= segments; i++) {
+    const u = closed ? (i / segments) % 1 : uFrom + (uTo - uFrom) * (i / segments);
+    curve.getPointAt(u, p);
+    curve.getTangentAt(u, t);
+    side.set(t.z, 0, -t.x).normalize();
+
+    if (prev) dist += p.distanceTo(prev);
+    prev = prev ? prev.copy(p) : p.clone();
+
+    const cx = p.x + side.x * offset;
+    const cz = p.z + side.z * offset;
+    const half = side.clone().multiplyScalar(width / 2);
+    pos.push(cx - half.x, y, cz - half.z);
+    pos.push(cx + half.x, y, cz + half.z);
+    nor.push(0, 1, 0, 0, 1, 0);
+    if (tile > 0) {
+      const v = dist / tile;
+      uv.push(offset / tile, v, (offset + width) / tile, v);
+    } else {
+      uv.push(0, u * 8, 1, u * 8);
+    }
+
+    if (i < segments) {
+      const a = i * 2;
+      idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  return geo;
+}
+
+/* ------------------------------------------------------------------ tex */
 
 function noiseTexture(size, base, spread, dots = 9000) {
   const c = document.createElement('canvas');
@@ -29,19 +84,133 @@ function noiseTexture(size, base, spread, dots = 9000) {
   return tex;
 }
 
-/** Alternating red/white bands along the V axis (kerbs run along the road). */
-function kerbTexture() {
+/** Asphalt: dark, low-contrast macadam with longitudinal tyre-wear bands.
+ *  The old bright, heavily-speckled read like gravel/dirt, so the base is
+ *  much darker, the speckle is sparse and dark-biased, and a few wide dark
+ *  rubber bands sell the "used tarmac" look. */
+function asphaltTexture() {
   const c = document.createElement('canvas');
-  c.width = 64;
-  c.height = 64;
+  c.width = c.height = 512;
   const g = c.getContext('2d');
-  g.fillStyle = '#e9e9e9';
-  g.fillRect(0, 0, 64, 64);
-  g.fillStyle = '#c81c1c';
-  g.fillRect(0, 0, 64, 32);
+  g.fillStyle = '#232529';
+  g.fillRect(0, 0, 512, 512);
+  // sparse, dark-biased aggregate speckle (little highlight = no gravel look)
+  for (let i = 0; i < 7000; i++) {
+    const light = Math.random() > 0.72;
+    const a = light ? Math.random() * 0.05 : Math.random() * 0.16;
+    g.fillStyle = light
+      ? `rgba(160, 165, 175, ${a})`
+      : `rgba(0, 0, 0, ${a})`;
+    const s = 1 + Math.random() * 1.4;
+    g.fillRect(Math.random() * 512, Math.random() * 512, s, s);
+  }
+  // soft coarse patches, mostly darkening
+  for (let i = 0; i < 380; i++) {
+    const light = Math.random() > 0.7;
+    const a = Math.random() * (light ? 0.035 : 0.09);
+    g.fillStyle = light ? `rgba(150, 155, 165, ${a})` : `rgba(0, 0, 0, ${a})`;
+    const s = 6 + Math.random() * 26;
+    g.fillRect(Math.random() * 512, Math.random() * 512, s, s * (0.4 + Math.random()));
+  }
+  // wide dark rubber bands (where the field runs), canvas Y = along the road
+  for (let i = 0; i < 5; i++) {
+    const x = 40 + Math.random() * 432;
+    const w = 18 + Math.random() * 40;
+    const a = 0.10 + Math.random() * 0.12;
+    const grad = g.createLinearGradient(x, 0, x + w, 0);
+    grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    grad.addColorStop(0.35, `rgba(0, 0, 0, ${a})`);
+    grad.addColorStop(0.65, `rgba(0, 0, 0, ${a})`);
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    g.fillStyle = grad;
+    g.fillRect(x, 0, w, 512);
+  }
+  // thin longitudinal wear streaks
+  for (let i = 0; i < 90; i++) {
+    const x = Math.random() * 512;
+    const w = 1 + Math.random() * 2.5;
+    const dark = Math.random() > 0.3;
+    g.fillStyle = dark
+      ? `rgba(0, 0, 0, ${0.04 + Math.random() * 0.07})`
+      : `rgba(140, 145, 152, ${0.02 + Math.random() * 0.03})`;
+    g.fillRect(x, 0, w, 512);
+  }
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+/** Gravel: fine tan dust with mixed pebbles - reads clearly as "not
+ *  tarmac" from the chase cam and from the 2 m bumper cam. */
+function gravelTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#9a7d55';
+  g.fillRect(0, 0, 512, 512);
+  // soft tonal patches (compacted vs loose gravel)
+  for (let i = 0; i < 420; i++) {
+    const light = Math.random() > 0.5;
+    const a = Math.random() * (light ? 0.10 : 0.14);
+    g.fillStyle = light ? `rgba(222, 200, 160, ${a})` : `rgba(96, 74, 48, ${a})`;
+    const s = 8 + Math.random() * 42;
+    g.fillRect(Math.random() * 512, Math.random() * 512, s, s * (0.4 + Math.random() * 0.9));
+  }
+  // aggregate: thousands of tiny 1-2 px grains, brown/grey/white mix
+  for (let i = 0; i < 14000; i++) {
+    const r = Math.random();
+    const a = 0.25 + Math.random() * 0.5;
+    g.fillStyle = r < 0.4
+      ? `rgba(64, 48, 32, ${a})`
+      : r < 0.75
+        ? `rgba(126, 100, 66, ${a})`
+        : `rgba(226, 210, 180, ${a})`;
+    const s = 1 + Math.random() * 1.8;
+    g.fillRect(Math.random() * 512, Math.random() * 512, s, s);
+  }
+  // a few distinct pebbles
+  for (let i = 0; i < 260; i++) {
+    const r = 1.2 + Math.random() * 2.4;
+    const shade = 90 + Math.floor(Math.random() * 120);
+    g.fillStyle = `rgba(${shade + 30}, ${shade + 10}, ${Math.max(30, shade - 40)}, 0.75)`;
+    g.beginPath();
+    g.ellipse(
+      Math.random() * 512, Math.random() * 512,
+      r, r * (0.6 + Math.random() * 0.5),
+      Math.random() * Math.PI, 0, Math.PI * 2,
+    );
+    g.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+/** Grayscale streaks for the rubber racing line (tinted by the material). */
+function rubberTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = 'rgba(255, 255, 255, 0.55)';
+  g.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 90; i++) {
+    const x = Math.random() * 128;
+    const w = 1 + Math.random() * 2.5;
+    g.fillStyle = `rgba(0, 0, 0, ${0.25 + Math.random() * 0.5})`;
+    g.fillRect(x, 0, w, 128);
+  }
+  for (let i = 0; i < 40; i++) {
+    const x = Math.random() * 128;
+    const w = 1 + Math.random() * 2;
+    g.fillStyle = `rgba(255, 255, 255, ${0.15 + Math.random() * 0.3})`;
+    g.fillRect(x, 0, w, 128);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   return tex;
 }
 
@@ -79,73 +248,108 @@ function checkerTexture() {
 }
 
 /**
- * Flat ribbon following `curve`, offset sideways, with a constant width.
- * Returns a geometry in world space at height y.
+ * Starting grid boxes painted on the tarmac: 2 columns x 6 rows, matching
+ * the game grid (12 m rows, +/-3 m columns). The canvas top ends up behind
+ * the start line, so rows grow towards the bottom of the canvas.
  */
-function ribbon(curve, segments, offset, width, y, tile = 0) {
-  const pos = [];
-  const uv = [];
-  const nor = [];
-  const idx = [];
-  const p = new THREE.Vector3();
-  const t = new THREE.Vector3();
-  const side = new THREE.Vector3();
-  let dist = 0;
-  let prev = null;
-
-  for (let i = 0; i <= segments; i++) {
-    const u = i / segments;
-    curve.getPointAt(u % 1, p);
-    curve.getTangentAt(u % 1, t);
-    side.set(t.z, 0, -t.x).normalize();
-
-    if (prev) dist += p.distanceTo(prev);
-    prev = prev ? prev.copy(p) : p.clone();
-
-    const cx = p.x + side.x * offset;
-    const cz = p.z + side.z * offset;
-    const half = side.clone().multiplyScalar(width / 2);
-    pos.push(cx - half.x, y, cz - half.z);
-    pos.push(cx + half.x, y, cz + half.z);
-    nor.push(0, 1, 0, 0, 1, 0);
-    if (tile > 0) {
-      const v = dist / tile;
-      uv.push(offset / tile, v, (offset + width) / tile, v);
-    } else {
-      uv.push(0, u * 8, 1, u * 8);
-    }
-
-    if (i < segments) {
-      const a = i * 2;
-      idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+function gridTexture() {
+  const W = 256;
+  const H = 1376; // 16 px per metre
+  const c = document.createElement('canvas');
+  c.width = W;
+  c.height = H;
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, W, H);
+  g.strokeStyle = 'rgba(235, 240, 246, 0.85)';
+  g.lineWidth = 5;
+  const boxW = 4.6 * 16; // 73.6 px
+  const boxH = 9.5 * 16; // 152 px
+  for (let row = 0; row < 6; row++) {
+    const d = (row + 1) * 12; // metres ahead of the line
+    const cols = row < 5 ? [-3, 3] : [-3]; // 11th car alone on the last row
+    for (const lat of cols) {
+      const cx = (lat + 8) * 16;
+      const cy = (d + 6) * 16;
+      g.strokeRect(cx - boxW / 2, cy - boxH / 2, boxW, boxH);
     }
   }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  geo.setIndex(idx);
-  return geo;
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
-function buildCurve() {
-  const pts = [];
-  const N = 18;
-  for (let i = 0; i < N; i++) {
-    const a = (i / N) * Math.PI * 2;
-    const r = 158 + 46 * Math.sin(3 * a + 0.4) + 20 * Math.sin(5 * a + 1.1);
-    pts.push(new THREE.Vector3(Math.cos(a) * r * 1.28, 0, Math.sin(a) * r * 0.82));
+/** F1-style five-light board. */
+function startLightsTexture() {
+  const c = document.createElement('canvas');
+  c.width = 512;
+  c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#0c0e12';
+  g.fillRect(0, 0, 512, 128);
+  g.fillStyle = '#171a20';
+  g.fillRect(8, 8, 496, 112);
+  for (let i = 0; i < 5; i++) {
+    const x = 64 + i * 96;
+    const grad = g.createRadialGradient(x, 64, 4, x, 64, 40);
+    grad.addColorStop(0, '#ff8d80');
+    grad.addColorStop(0.45, '#ff1f1f');
+    grad.addColorStop(1, '#5c0505');
+    g.fillStyle = grad;
+    g.beginPath();
+    g.arc(x, 64, 40, 0, Math.PI * 2);
+    g.fill();
   }
-  return new THREE.CatmullRomCurve3(pts, true, 'catmullrom', 0.5);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
-export function createTrack(scene) {
+/* -------------------------------------------------------------- track */
+
+/**
+ * Asphalt u-ranges (the complement of the gravel zones), found by sampling
+ * `isGravel` around the lap. One full wrap is scanned from a sample that is
+ * known to be asphalt, so ranges that cross u = 0 come back split as
+ * [a, 1] + [0, b].
+ */
+function asphaltRanges(layout) {
+  if (!layout.gravel || !layout.gravel.length) return [[0, 1]];
+  const N = 2400;
+  const flags = new Uint8Array(N);
+  for (let i = 0; i < N; i++) flags[i] = layout.isGravel(i / N) ? 1 : 0;
+  let s = 0;
+  while (s < N && flags[s]) s++;
+  const ranges = [];
+  for (let k = 1; k <= N; k++) {
+    const i = (s + k) % N;
+    if (!flags[i]) {
+      const prev = (s + k - 1) % N;
+      if (!ranges.length || flags[prev]) ranges.push([i / N, 0]);
+      ranges[ranges.length - 1][1] = ((i + 1) / N) % 1;
+    }
+  }
+  const out = [];
+  for (const [a, b] of ranges) {
+    if (a <= b) out.push([a, b]);
+    else {
+      out.push([a, 1]);
+      out.push([0, b]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Build the circuit world for a track layout (TRACKS.circuit or
+ * TRACKS.rally). Returns the same shape for both; the rally adds gravel
+ * ribbons + a per-zone surface query (used for tyre grip).
+ */
+export function createTrack(scene, layout) {
   const group = new THREE.Group();
   scene.add(group);
 
   // ---------------------------------------------------------------- ground
-  const groundTex = noiseTexture(512, '#46523a', 0.16, 12000);
+  const groundTex = noiseTexture(512, '#414d36', 0.16, 12000);
   groundTex.repeat.set(160, 160);
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(8000, 8000),
@@ -156,11 +360,11 @@ export function createTrack(scene) {
   group.add(ground);
 
   // ------------------------------------------------------------------ road
-  const curve = buildCurve();
-  const length = curve.getLength();
-  const segments = Math.min(1400, Math.max(500, Math.round(length / 2.5)));
+  const curve = layout.curve;
+  const length = layout.length;
+  const segments = Math.min(1600, Math.max(500, Math.round(length / 2.2)));
 
-  const asphalt = noiseTexture(512, '#33353a', 0.13, 16000);
+  const asphalt = asphaltTexture();
   const road = new THREE.Mesh(
     ribbon(curve, segments, 0, ROAD_HALF_WIDTH * 2, 0.02, 7),
     new THREE.MeshStandardMaterial({
@@ -175,77 +379,120 @@ export function createTrack(scene) {
   road.receiveShadow = true;
   group.add(road);
 
+  // gravel sections (rallycross only): low-grip surface painted over the
+  // tarmac, one open ribbon per zone. The asphalt ribbon stays underneath
+  // everywhere, so a gravel zone is the only thing that changes the surface.
+  if (layout.gravel.length) {
+    const gTex = gravelTexture();
+    const gMat = new THREE.MeshStandardMaterial({
+      map: gTex,
+      roughness: 1.0,
+      metalness: 0,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    for (const [a, b] of layout.gravel) {
+      const span = (b - a + 1) % 1;
+      if (span < 0.005) continue;
+      const segs = Math.max(16, Math.round(segments * span));
+      const g = new THREE.Mesh(
+        ribbon(curve, segs, 0, ROAD_HALF_WIDTH * 2, 0.0215, 7, false, a, b),
+        gMat,
+      );
+      g.receiveShadow = true;
+      group.add(g);
+    }
+  }
+
+  // shared track plan (racing line + curvature profile)
+  const track = { curve, length };
+  const line = buildRacingLine(track);
+
+  // --- Z-fighting strategy ---------------------------------------------------
+  // The chase camera has near=0.3 / far~6000, so depth precision a few metres
+  // ahead is in the millimetres. Road markings only a few mm above the asphalt
+  // would flicker in and out of the depth test as the car moves ("lines only
+  // visible when the car passes"). We render every painted layer as a decal:
+  // depthWrite:false (so it never loses a tie) + an explicit renderOrder (so
+  // layering is deterministic). They still depth-TEST, so wheels, cones and
+  // the car correctly occlude them.
+
+  // worn rubber racing line baked onto the tarmac
+  {
+    const p = new THREE.Vector3();
+    const t = new THREE.Vector3();
+    const linePts = [];
+    for (let i = 0; i < line.n; i++) {
+      curve.getPointAt(i / line.n, p);
+      curve.getTangentAt(i / line.n, t);
+      const inv = 1 / Math.max(Math.hypot(t.x, t.z), 1e-6);
+      const nx = t.z * inv;
+      const nz = -t.x * inv;
+      linePts.push(new THREE.Vector3(p.x + nx * line.offsets[i], 0, p.z + nz * line.offsets[i]));
+    }
+    const lineCurve = new THREE.CatmullRomCurve3(linePts, true, 'catmullrom', 0.5);
+    const rubber = new THREE.Mesh(
+      ribbon(lineCurve, 900, 0, 2.7, 0.03, 5.5),
+      new THREE.MeshBasicMaterial({
+        map: rubberTexture(),
+        color: 0x111214,
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+        polygonOffsetUnits: -3,
+      }),
+    );
+    rubber.renderOrder = 1;
+    group.add(rubber);
+  }
+
   // white edge lines
-  const lineMat = new THREE.MeshStandardMaterial({ color: 0xd8dde2, roughness: 0.7 });
+  // The asphalt carries polygonOffset(-1,-1) (to beat the grass below it),
+  // which pushes its depth toward the camera and can steal the depth test
+  // from markings only a couple of cm above it. Every painted layer gets a
+  // stronger -3 offset so it is guaranteed to win that fight at any range.
+  const lineMat = new THREE.MeshStandardMaterial({
+    color: 0xd8dde2,
+    roughness: 0.7,
+    polygonOffset: true,
+    polygonOffsetFactor: -3,
+    polygonOffsetUnits: -3,
+  });
+  lineMat.depthWrite = false;
   for (const s of [-1, 1]) {
     const line = new THREE.Mesh(
-      ribbon(curve, segments, s * (ROAD_HALF_WIDTH - 0.45), 0.16, 0.035),
+      ribbon(curve, segments, s * (ROAD_HALF_WIDTH - 0.45), 0.16, 0.036),
       lineMat,
     );
+    line.renderOrder = 3;
     group.add(line);
   }
 
-  // centre dashes
+  // centre dashes - only on tarmac; the gravel sections have no painted
+  // centre line (a rallycross gravel patch reads as gravel, not asphalt).
   {
     const dashTex = dashTexture();
-    const dash = new THREE.Mesh(
-      ribbon(curve, segments, 0, 0.14, 0.033, 9),
-      new THREE.MeshStandardMaterial({
-        map: dashTex,
-        transparent: true,
-        opacity: 0.5,
-        roughness: 0.8,
-        depthWrite: false,
-      }),
-    );
-    group.add(dash);
-  }
-
-  // kerbs - only on racing line (apex/cornering side) per sample
-  {
-    const kerbTex = kerbTexture();
-    const kerbMat = new THREE.MeshStandardMaterial({ map: kerbTex, roughness: 0.75 });
-    const tmpTrack = { curve, length };
-    const line = buildRacingLine(tmpTrack);
-    const N = line.n;
-    const kerbGeo = new THREE.BufferGeometry();
-    const pos = [];
-    const uv = [];
-    const nor = [];
-    const idx = [];
-    const p = new THREE.Vector3();
-    const t = new THREE.Vector3();
-    const side = new THREE.Vector3();
-    let dist = 0;
-    let prev = null;
-    for (let i = 0; i <= N; i++) {
-      const u = i / N;
-      curve.getPointAt(u % 1, p);
-      curve.getTangentAt(u % 1, t);
-      side.set(t.z, 0, -t.x).normalize();
-      if (prev) dist += p.distanceTo(prev);
-      prev = prev ? prev.copy(p) : p.clone();
-      const off = line.offsets[i % N];
-      const kerbSide = off >= 0 ? 1 : -1;
-      const cx = p.x + side.x * kerbSide * (ROAD_HALF_WIDTH + 0.72);
-      const cz = p.z + side.z * kerbSide * (ROAD_HALF_WIDTH + 0.72);
-      const half = side.clone().multiplyScalar(1.3 / 2);
-      pos.push(cx - half.x, 0.028, cz - half.z);
-      pos.push(cx + half.x, 0.028, cz + half.z);
-      nor.push(0, 1, 0, 0, 1, 0);
-      const v = dist / 2.4;
-      uv.push(0, v, 1, v);
-      if (i < N) {
-        const a = i * 2;
-        idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
-      }
+    const dashMat = new THREE.MeshStandardMaterial({
+      map: dashTex,
+      transparent: true,
+      opacity: 0.45,
+      roughness: 0.8,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
+    });
+    for (const [a, b] of asphaltRanges(layout)) {
+      const span = (b - a + 1) % 1;
+      if (span < 0.01) continue; // skip stubs / the degenerate zero-length run
+      const segs = Math.max(8, Math.round(segments * span));
+      const dash = new THREE.Mesh(ribbon(curve, segs, 0, 0.14, 0.032, 9, false, a, b), dashMat);
+      dash.renderOrder = 2;
+      group.add(dash);
     }
-    kerbGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    kerbGeo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-    kerbGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    kerbGeo.setIndex(idx);
-    const kerb = new THREE.Mesh(kerbGeo, kerbMat);
-    group.add(kerb);
   }
 
   // ------------------------------------------------------- start/finish line
@@ -255,27 +502,56 @@ export function createTrack(scene) {
     new THREE.Vector3(0, 0, 1),
     startTan.clone().setY(0).normalize(),
   );
+  const rotY = Math.atan2(startTan.x, startTan.z);
 
   {
     const chk = checkerTexture();
     chk.repeat.set(7, 1);
     const line = new THREE.Mesh(
       new THREE.PlaneGeometry(ROAD_HALF_WIDTH * 2, 2.2),
-      new THREE.MeshStandardMaterial({ map: chk, roughness: 0.7 }),
+      new THREE.MeshStandardMaterial({
+        map: chk,
+        roughness: 0.7,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+        polygonOffsetUnits: -3,
+      }),
     );
+    line.material.depthWrite = false;
+    line.renderOrder = 5; // painted over the lane lines at the start line
     line.rotation.x = -Math.PI / 2;
-    line.rotation.z = Math.atan2(startTan.x, startTan.z);
+    line.rotation.z = rotY;
     line.position.set(start.x, 0.045, start.z);
     group.add(line);
   }
 
-  // gantry
+  // painted starting grid boxes
+  {
+    const grid = new THREE.Mesh(
+      new THREE.PlaneGeometry(16, 86),
+      new THREE.MeshBasicMaterial({
+        map: gridTexture(),
+        transparent: true,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+        polygonOffsetUnits: -3,
+      }),
+    );
+    grid.rotation.x = -Math.PI / 2;
+    grid.rotateY(rotY);
+    grid.position.set(start.x + startTan.x * 38, 0.05, start.z + startTan.z * 38);
+    grid.renderOrder = 6;
+    group.add(grid);
+  }
+
+  // gantry: posts + beam + F1 light board + banner
   {
     const steel = new THREE.MeshStandardMaterial({ color: 0x2b3037, roughness: 0.45, metalness: 0.8 });
     const side = new THREE.Vector3(startTan.z, 0, -startTan.x).normalize();
     const post = (s) => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(0.36, 7, 0.36), steel);
-      m.position.set(start.x + s.x * 9.4, 3.5, start.z + s.z * 9.4);
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.36, 7.6, 0.36), steel);
+      m.position.set(start.x + s.x * 9.4, 3.8, start.z + s.z * 9.4);
       m.castShadow = true;
       return m;
     };
@@ -283,10 +559,26 @@ export function createTrack(scene) {
     group.add(post(side.clone().negate()));
 
     const beam = new THREE.Mesh(new THREE.BoxGeometry(19.2, 0.5, 0.5), steel);
-    beam.position.set(start.x, 6.6, start.z);
-    beam.rotation.y = Math.atan2(startTan.x, startTan.z) + Math.PI / 2;
+    beam.position.set(start.x, 7.2, start.z);
+    beam.rotation.y = rotY + Math.PI / 2;
     beam.castShadow = true;
     group.add(beam);
+
+    // F1-style five-light board under the beam, facing the incoming cars
+    const lights = new THREE.Mesh(
+      new THREE.PlaneGeometry(3.1, 0.78),
+      new THREE.MeshStandardMaterial({
+        map: startLightsTexture(),
+        emissive: new THREE.Color(0xff2b20),
+        emissiveMap: startLightsTexture(),
+        emissiveIntensity: 0.85,
+        roughness: 0.5,
+        side: THREE.DoubleSide,
+      }),
+    );
+    lights.position.set(start.x - startTan.x * 0.7, 6.55, start.z - startTan.z * 0.7);
+    lights.rotation.y = rotY + Math.PI;
+    group.add(lights);
 
     const c = document.createElement('canvas');
     c.width = 1024;
@@ -312,13 +604,13 @@ export function createTrack(scene) {
       new THREE.PlaneGeometry(19, 4.2),
       new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6, side: THREE.DoubleSide }),
     );
-    banner.position.set(start.x, 5.6, start.z);
-    banner.rotation.y = Math.atan2(startTan.x, startTan.z) + Math.PI;
+    banner.position.set(start.x, 4.6, start.z);
+    banner.rotation.y = rotY + Math.PI;
     group.add(banner);
   }
 
   // ---------------------------------------------------------------- scenery
-  // Cones along the outside of the kerbs, instanced.
+  // Cones along the outside of the road edge, instanced.
   {
     const coneGeo = new THREE.ConeGeometry(0.22, 0.52, 8);
     const coneMat = new THREE.MeshStandardMaterial({ color: 0xff5a1f, roughness: 0.65 });
@@ -356,7 +648,39 @@ export function createTrack(scene) {
     group.add(cones, bases);
   }
 
-  // kerb di tikungan (racing line) - sudah di atas, hapus tiang/pagar rambu
+  // ------------------------------------------- broadcast camera masts
+  // a pole + camera head at every corner camera slot - the same 12.5 m
+  // outside position the TV corner cam uses, so the mast stands exactly
+  // where the broadcast camera in the shot is "sitting"
+  if (layout.corners && layout.corners.length) {
+    const poleGeo = new THREE.BoxGeometry(0.16, 3.0, 0.16);
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.6, metalness: 0.4 });
+    const headGeo = new THREE.BoxGeometry(0.72, 0.46, 0.5);
+    const headMat = new THREE.MeshStandardMaterial({ color: 0x2b2f36, roughness: 0.5, metalness: 0.2 });
+    const masts = new THREE.Group();
+    const mP = new THREE.Vector3();
+    const mT = new THREE.Vector3();
+    const mR = new THREE.Vector3();
+    const mL = new THREE.Vector3();
+    for (const c of layout.corners) {
+      curve.getPointAt(c.u, mP);
+      curve.getTangentAt(c.u, mT);
+      mT.y = 0;
+      mT.normalize();
+      mR.set(mT.z, 0, -mT.x);
+      mP.addScaledVector(mR, c.side * 12.5);
+      const pole = new THREE.Mesh(poleGeo, poleMat);
+      pole.position.set(mP.x, 1.5, mP.z);
+      pole.castShadow = true;
+      const head = new THREE.Mesh(headGeo, headMat);
+      head.position.set(mP.x, 3.15, mP.z);
+      curve.getPointAt((((c.u - 0.01) % 1) + 1) % 1, mL);
+      mL.y = 1.9;
+      head.lookAt(mL);
+      masts.add(pole, head);
+    }
+    group.add(masts);
+  }
 
   return {
     group,
@@ -365,5 +689,13 @@ export function createTrack(scene) {
     start,
     startQuat,
     startTangent: startTan,
+    racingLine: line,
+    // broadcast camera slots: one at every designed corner of the layout
+    corners: layout.corners,
+    // surface (rallycross): u-space gravel zones + grip queries
+    gravel: layout.gravel,
+    surfaceAt: layout.surfaceAt,
+    isGravel: layout.isGravel,
+    gripGravel: GRIP_GRAVEL,
   };
 }

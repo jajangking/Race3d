@@ -121,6 +121,10 @@ export class Vehicle {
     this.steerAngle = 0;
     this.reverseHold = 0;
 
+    // Surface grip scale for the tyre model: 1 on tarmac, ~0.72 on gravel.
+    // The game loop refreshes it from the track layout each frame.
+    this.grip = 1;
+
     // Driver aids. A modern road car has these; switch them off for pure sim.
     this.assists = { tc: true, esc: true };
 
@@ -355,6 +359,7 @@ export class Vehicle {
 
     // -------------------------------------- 3. tyre forces + wheel dynamics
     const tarmac = cfg.tyre;
+    const grip = this.grip; // surface scale (1 tarmac / ~0.72 gravel)
     let maxSlip = 0;
 
     for (const wheel of this.wheels) {
@@ -420,7 +425,7 @@ export class Vehicle {
       wheel.vLong = vLong;
       wheel.vLat = vLat;
 
-      const res = this.tire.evaluate(wheel.load, kappa, alpha);
+      const res = this.tire.evaluate(wheel.load, kappa, alpha, grip);
       wheel.usage = res.usage;
       wheel.frictionMu = res.mu;
       wheel.vLong = vLong;
@@ -437,8 +442,9 @@ export class Vehicle {
       const fx = wheel.fx;
       const fy = wheel.fy;
 
-      // rolling resistance
-      const rr = -Math.sign(vLong) * tarmac.rollingResistance * wheel.load;
+      // rolling resistance; loose gravel scrubs ~60% harder than tarmac
+      const rr = -Math.sign(vLong) * tarmac.rollingResistance * wheel.load
+        * (1 + (1 - grip) * 1.5);
 
       _force.copy(_fwd).multiplyScalar(fx + rr).addScaledVector(_lat, fy);
       this.body.addForceAtPoint(_force, wheel.contact, true);
@@ -454,7 +460,7 @@ export class Vehicle {
       const inertia = this.wheelInertia;
       const eps = 0.5;
       const k1 = ((wheel.omega + eps) * R - vLong) / denom;
-      const f1 = this.tire.evaluate(wheel.load, k1, alpha);
+      const f1 = this.tire.evaluate(wheel.load, k1, alpha, grip);
       const dFdOmega = (f1.fx - res.fx) / eps;
       const denomW = Math.max(inertia / dt + R * dFdOmega, inertia / dt);
       let omega = freeRoll

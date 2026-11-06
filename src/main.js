@@ -5,13 +5,42 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { Vehicle } from './vehicle/vehicle.js';
 import { CAR } from './vehicle/config.js';
 import { createTrack } from './render/track.js';
+import { createScenery } from './render/scenery.js';
 import { createCarMesh } from './render/carMesh.js';
 import { createSkidMarks } from './render/skidMarks.js';
 import { createTireSmoke } from './render/tireSmoke.js';
 import { ChaseCamera } from './render/chaseCamera.js';
+import { SpectatorCamera, SHOTS } from './render/spectatorCamera.js';
+import { createHeliMesh, HeliUnit } from './render/heli.js';
 import { Input } from './input.js';
 import { Hud } from './hud.js';
 import { AIDriver } from './ai/aiDriver.js';
+import { EngineAudio } from './audio/engineAudio.js';
+import { createCity } from './city/cityRender.js';
+import { CITY, createCityLights, nodeIndex, cityBuildings, nearestRoadPoint } from './city/cityLayout.js';
+import { CityDriver } from './city/cityDriver.js';
+import { TRACKS } from './trackLayout.js';
+
+// ------------------------------------------------------------------ errors
+// Phones have no handy console: surface JS errors on-screen (bottom-left)
+// so a stuck screen can be reported with the actual exception next to it.
+const _errBox = document.createElement('div');
+_errBox.id = 'js-error-overlay';
+_errBox.style.cssText =
+  'position:fixed;left:8px;bottom:8px;max-width:72vw;max-height:26vh;overflow:auto;' +
+  'z-index:9999;background:#7f1d1dee;color:#fecaca;font:11px/1.45 monospace;' +
+  'padding:6px 9px;border-radius:6px;white-space:pre-wrap;display:none;pointer-events:none;';
+document.body.appendChild(_errBox);
+function showJsError(msg) {
+  _errBox.textContent = '⚠ ' + String(msg).slice(0, 500);
+  _errBox.style.display = 'block';
+}
+window.addEventListener('error', (e) =>
+  showJsError(`${e.message} (${(e.filename || '').split('/').pop()}:${e.lineno})`),
+);
+window.addEventListener('unhandledrejection', (e) =>
+  showJsError('promise: ' + ((e.reason && e.reason.message) || e.reason)),
+);
 
 // ------------------------------------------------------------------ physics
 const FIXED_DT = 1 / 120;
@@ -45,9 +74,12 @@ renderer.toneMappingExposure = 1.02;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0xb9cfe0, 260, 1500);
+// long atmospheric fade: the world has hills on the horizon now
+scene.fog = new THREE.Fog(0xc2d4e2, 350, 2600);
 
-const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.3, 6000);
+// near/far kept tight (hills end ~2.6 km): tight planes give ~1.7x better
+// depth precision than 0.3/6000, which stops road markings z-fighting.
+const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.5, 3000);
 
 // studio-ish reflections so the paint and rims don't look flat outdoors
 {
@@ -60,7 +92,7 @@ const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.3, 60
 
 // ---------------------------------------------------------------------- sky
 {
-  const skyGeo = new THREE.SphereGeometry(4200, 32, 16);
+  const skyGeo = new THREE.SphereGeometry(2900, 32, 16);
   const skyMat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
@@ -115,8 +147,23 @@ sun.shadow.normalBias = 0.025;
 scene.add(sun);
 scene.add(sun.target);
 
+// the field's livery, also used to paint the pit boxes and building facade
+const OPPONENT_COLORS = [
+  0xe23b2f, 0xf08a24, 0xf2c230, 0x2fae58, 0x18b6a6,
+  0x7a4fd0, 0xd84a9f, 0xe8eef4, 0x6b7480, 0x8c1b1b,
+];
+
 // --------------------------------------------------------------------- track
-const track = createTrack(scene);
+// Two selectable circuits: the all-tarmac CIRCUIT and the mixed-surface
+// RALLYCROSS (gravel sections with low grip). `track` always points at the
+// active one; the rally world is built lazily the first time it is picked,
+// so the intro screen stays cheap.
+const circuitTrack = createTrack(scene, TRACKS.circuit);
+let track = circuitTrack;
+let rallyTrack = null;
+let rallyScenery = null;
+// keep the group: city mode hides the whole race world
+const sceneryGroup = createScenery(scene, circuitTrack, [0x1f6bff, ...OPPONENT_COLORS]);
 
 // ----------------------------------------------------------------------- car
 const spawn = new THREE.Vector3(track.start.x, 0.46, track.start.z);
@@ -129,7 +176,8 @@ const car = new Vehicle({
 // scene queries need one step before the raycasts work
 world.step();
 
-const carMesh = createCarMesh(CAR);
+// number 1 = player; a white centre stripe marks it as "your car"
+const carMesh = createCarMesh({ ...CAR, number: '1', stripe: true });
 scene.add(carMesh.root);
 carMesh.root.visible = true;
 
@@ -137,17 +185,17 @@ carMesh.root.visible = true;
 // A small field of AI cars on a staggered grid. Each one has a slightly
 // different speed target so the pack spreads out and they actually overtake.
 const OPPONENT_COUNT = 10;
-const OPPONENT_COLORS = [
-  0xe23b2f, 0xf08a24, 0xf2c230, 0x2fae58, 0x18b6a6,
-  0x7a4fd0, 0xd84a9f, 0xe8eef4, 0x6b7480, 0x8c1b1b,
-];
 const GRID_ROW_GAP = 12;   // m between rows
 const GRID_COL_OFFSET = 3; // m left/right of the centreline
 
 // Deterministic driver setups. Pace scales the shared grip-limited profile,
 // lineScale is how much of the racing line a car uses, and laneBias gives the
 // pack a natural spread instead of ten identical trajectories.
-const OPPONENT_PACE = [1.005, 1.02, 0.985, 1.03, 0.995, 1.015, 0.98, 1.025, 1.0, 1.01];
+// Tight pace spread (~0.8%): the follow governor only re-syncs cars within
+// ~30 m, so any car running free (the leader, or a gap ahead of it) escapes
+// at its own pace. A wide spread let fast cars peel away and stretch the
+// field into 200-350 m gaps between clusters. Kept tight so the pack holds.
+const OPPONENT_PACE = [1.002, 1.004, 0.998, 1.005, 1.001, 1.003, 0.997, 1.004, 1.0, 1.002];
 const OPPONENT_LINE = [0.96, 1.0, 0.92, 0.99, 0.94, 0.97, 0.9, 0.98, 0.95, 0.93];
 const OPPONENT_BIAS = [0.2, -0.25, -0.4, 0.4, 0.0, -0.1, 0.35, -0.35, 0.1, -0.2];
 
@@ -174,7 +222,7 @@ for (let i = 0; i < OPPONENT_COUNT; i++) {
   });
   const paint = OPPONENT_COLORS[i];
   const paintDark = new THREE.Color(paint).multiplyScalar(0.62).getHex();
-  const mesh = createCarMesh({ ...CAR, paint, paintDark, simple: true });
+  const mesh = createCarMesh({ ...CAR, paint, paintDark, simple: true, number: String(i + 2) });
   scene.add(mesh.root);
   // laneOffset is only used during the launch phase: it holds the grid
   // column until the field is rolling, then the racing line takes over.
@@ -185,6 +233,7 @@ for (let i = 0; i < OPPONENT_COUNT; i++) {
     lineScale: OPPONENT_LINE[i],
     laneBias: OPPONENT_BIAS[i],
     laneOffset,
+    parity: i % 2,
   }, world);
   driver.u = slot.u;
   opponents.push({ car: opponentCar, mesh, driver, laneOffset });
@@ -197,23 +246,356 @@ const tireSmoke = createTireSmoke(scene);
 const chase = new ChaseCamera(camera, track);
 chase.snap(car);
 
+// Spectator (AI vs AI) mode: the player's car joins the field as the 11th AI
+// car and the player watches with TV / orbit / cinematic / drone cameras.
+const spectator = new SpectatorCamera(camera, canvas, track);
+let spectate = false;
+let focusIdx = 0;
+let lastLeaderIdx = 0;
+const race = { laps: [], prevU: [], progress: [] };
+
+// The two broadcast helicopters flying over the field - physical objects
+// visible from every camera. The TV feed's HELI / CRASH shots are read
+// from their own smoothed poses (the camera IS the heli), so the heli
+// footage glides instead of zigzagging, and a crash flurry just sends
+// the incident heli gliding between contact points instead of teleporting.
+const heli1 = new HeliUnit(
+  createHeliMesh({ stripe: 0xe23b2e }), // the follow heli (red stripe)
+  new THREE.Vector3(track.start.x, 26, track.start.z),
+);
+const heli2 = new HeliUnit(
+  createHeliMesh({ stripe: 0x2b6fe2 }), // the incident / patrol heli (blue)
+  new THREE.Vector3(track.start.x, 44, track.start.z),
+);
+scene.add(heli1.heli.root, heli2.heli.root);
+spectator.helics = [heli1, heli2];
+// the patrol heli flies a free pattern over the FIELD CENTRE (not along
+// the track): the centre is recomputed when the active track changes
+const heliPatrolC = new THREE.Vector3();
+const _patrolTmp = new THREE.Vector3();
+function refreshHeliPatrol() {
+  const N = 96;
+  heliPatrolC.set(0, 0, 0);
+  for (let i = 0; i < N; i++) {
+    track.curve.getPointAt(i / N, _patrolTmp);
+    heliPatrolC.add(_patrolTmp);
+  }
+  heliPatrolC.divideScalar(N);
+}
+refreshHeliPatrol();
+let heliPatrolT = Math.random() * 100;
+const _ha = new THREE.Vector3(); // heli anchor scratch (pos)
+const _hl = new THREE.Vector3(); // heli anchor scratch (look)
+const _hf = new THREE.Vector3(); // follow-car forward
+const _hq = new THREE.Quaternion();
+
+// ------------------------------------------------- city (autonomous driving)
+// A grid of streets: the player drives car #1 while the 10 AI cars share
+// the road autonomously (lane keeping, traffic lights, turn signals,
+// following distance). The camera follows the player by default; KENDARAAN
+// can watch any AI car instead (the player keeps driving their own car).
+let cityMode = false;
+let cityRef = null;
+let cityLights = null;
+let cityFleet = null;
+let cityTime = 0;
+let cityFocus = -1; // -1 = the player's car, 0..n = an AI car
+// city population: the 10 race opponents PLUS extra traffic-only cars, so
+// the streets feel busy. The extras exist only in KOTA mode (created in
+// setupCity), so the race scene stays lean. 45 AI cars + you = 46 vehicles
+// (up to 2 cars per road segment).
+const CITY_EXTRA_CARS = 35;
+const cityExtras = []; // traffic-only cars { car, mesh, driver }
+let cityField = null;  // every AI car on the road (opponents + extras)
+const CITY_CAM_LABELS = ['CHASE', 'HOKA', 'BUMPER', 'OVERVIEW'];
+
+/** The car the city camera / HUD currently focus on. */
+function cityFocusCar() {
+  return cityFocus < 0 ? car : (cityField || opponents)[cityFocus].car;
+}
+
+/**
+ * Spread `count` spawn points over road segments, mid-segment on the
+ * correct (right-hand) lane, facing the segment's far node. Up to TWO cars
+ * per segment (opposite directions, or same direction in the far half of
+ * the segment) so a busy city fits far more traffic than one car per road.
+ * `excludeKey` keeps one segment free (the player's spawn).
+ */
+function citySpawnSpots(count, excludeKey = null) {
+  const spots = [];
+  const perKey = new Map(); // key -> [{d, t}]
+  let guard = 0;
+  while (spots.length < count && guard++ < 3000) {
+    const horiz = Math.random() < 0.5;
+    const line = Math.floor(Math.random() * CITY.n);
+    const gap = Math.floor(Math.random() * (CITY.n - 1));
+    const key = (horiz ? 'h' : 'v') + line + '-' + gap;
+    if (key === excludeKey) continue;
+    const existing = perKey.get(key) ?? [];
+    if (existing.length >= 2) continue;
+    const d = Math.random() < 0.5 ? 1 : -1;
+    // sharing a segment in the SAME direction? take the far half so the
+    // two cars start 7+ m apart in one lane
+    const first = existing.find((e) => e.d === d);
+    const t = first ? (first.t <= 0.5 ? 0.6 + Math.random() * 0.2 : 0.3 + Math.random() * 0.2)
+                    : 0.3 + Math.random() * 0.2;
+    existing.push({ d, t });
+    perKey.set(key, existing);
+    const a0 = d > 0 ? gap : gap + 1;
+    const a1 = d > 0 ? gap + 1 : gap;
+    const nextNode = horiz ? nodeIndex(a1, line) : nodeIndex(line, a1);
+    const c0 = (a0 - (CITY.n - 1) / 2) * CITY.pitch;
+    const c1 = (a1 - (CITY.n - 1) / 2) * CITY.pitch;
+    // a horizontal road (running along X) lives at z = linePos; a vertical
+    // one (running along Z) lives at x = linePos
+    const linePos = (line - (CITY.n - 1) / 2) * CITY.pitch;
+    const segPos = c0 + (c1 - c0) * t;
+    const x = horiz ? segPos : linePos;
+    const z = horiz ? linePos : segPos;
+    const fx = horiz ? d : 0;
+    const fz = horiz ? 0 : d;
+    // right-hand lane: offset to the right of the travel direction
+    const r = { x: fz, z: -fx };
+    const pos = new THREE.Vector3(x + r.x * CITY.lane, 0.48, z + r.z * CITY.lane);
+    const q = new THREE.Quaternion().setFromUnitVectors(
+      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(fx, 0, fz),
+    );
+    spots.push({
+      pos,
+      q,
+      yaw: Math.atan2(fx, fz),
+      nextNode,
+    });
+  }
+  return spots;
+}
+
+function setupCity() {
+  track.group.visible = false;
+  sceneryGroup.visible = false;
+  cityRef = createCity(scene);
+  cityLights = createCityLights();
+
+  // solid city: one static collider per building, so the player (and any
+  // recovering AI car) bounces off the blocks instead of driving through
+  for (const b of cityBuildings()) {
+    world.createCollider(
+      RAPIER.ColliderDesc.cuboid(b.w / 2, b.h / 2, b.d / 2)
+        .setTranslation(b.x, b.h / 2 + 0.02, b.z)
+        .setFriction(0.5),
+    );
+  }
+
+  // the player drives car #1: mid-segment on B3->C3, right-hand lane,
+  // facing east (the fixed, safe segment the AI spawns skip)
+  const playerX = -CITY.pitch / 2;
+  const playerZ = -CITY.lane;
+  car.reset(
+    new THREE.Vector3(playerX, 0.48, playerZ),
+    new THREE.Quaternion().setFromUnitVectors(
+      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(1, 0, 0),
+    ),
+  );
+  car.drivetrain.gear = 1;
+  car.turnSignal = 0;
+
+  // re-home every AI car onto a random city segment with a fresh driver:
+  // the 10 race opponents plus the extra traffic-only cars that make the
+  // city feel busy (the extras only exist in KOTA mode).
+  let totalAI = opponents.length + CITY_EXTRA_CARS;
+  const spots = citySpawnSpots(totalAI, 'h2-1');
+  // defensive: never index past the spots array (a shortfall would throw
+  // mid-setup and strand the game on the last rendered frame)
+  if (spots.length < totalAI) {
+    console.warn(`[city] spawn spots short: ${spots.length} < ${totalAI}`);
+    totalAI = spots.length;
+  }
+  for (let i = 0; i < totalAI; i++) {
+    const s = spots[i];
+    let o;
+    if (i < opponents.length) {
+      o = opponents[i];
+    } else {
+      // traffic-only car: fresh Vehicle + simple mesh + CityDriver
+      const paint = OPPONENT_COLORS[(i - opponents.length) % OPPONENT_COLORS.length];
+      const paintDark = new THREE.Color(paint).multiplyScalar(0.62).getHex();
+      const carX = new Vehicle({ RAPIER, world, position: s.pos, quaternion: s.q });
+      const mesh = createCarMesh({ ...CAR, paint, paintDark, simple: true, number: String(i + 2) });
+      scene.add(mesh.root);
+      o = { car: carX, mesh, driver: null, laneOffset: 0 };
+      cityExtras.push(o);
+    }
+    o.car.reset(s.pos, s.q);
+    o.car.drivetrain.gear = 1;
+    o.car.drivetrain.shiftTimer = 0;
+    o.car.drivetrain.shiftCooldown = 0;
+    o.driver = new CityDriver(o.car, world, cityLights, () => cityTime);
+    o.driver.reset(s.pos.x, s.pos.z, s.yaw, s.nextNode);
+  }
+  cityField = [...opponents, ...cityExtras];
+  // shared fleet snapshot: the city drivers reason about OTHER cars' real
+  // positions/heading (semantic traffic model), e.g. the left-turn yield.
+  // The player's car is traffic too, so the AI brakes / yields to it.
+  cityFleet = {
+    list: [
+      ...cityField.map((o) => ({ x: 0, z: 0, dx: 0, dz: 1, car: o.car })),
+      { x: playerX, z: playerZ, dx: 1, dz: 0, car },
+    ],
+  };
+  for (const o of cityField) o.driver.setFleet(() => cityFleet.list);
+  world.step();
+
+  document.body.classList.add('is-city');
+  chase.city = true;
+  chase.mode = 0;
+  cityFocus = -1; // follow the player
+  chase.snap(car);
+  hud.setCityCam(CITY_CAM_LABELS[0]);
+}
+
+const _rCityF = new THREE.Vector3();
+const _rCityQ = new THREE.Quaternion();
+
+/**
+ * Player-triggered "back on the road" (R / the ↻ button): put car #1 onto
+ * the nearest road lane, facing the direction it was already travelling.
+ * Outside the grid entirely -> the central intersection.
+ */
+function respawnCity(target = car) {
+  const t = target.body.translation();
+  const q = target.body.rotation();
+  _rCityF.set(0, 0, 1).applyQuaternion(_rCityQ.set(q.x, q.y, q.z, q.w));
+  _rCityF.y = 0;
+  const fl = Math.hypot(_rCityF.x, _rCityF.z);
+  const fx = _rCityF.x / Math.max(fl, 1e-6);
+  const fz = _rCityF.z / Math.max(fl, 1e-6);
+  const road = nearestRoadPoint(t.x, t.z);
+  let px, pz, dx, dz;
+  if (road && road.dev < 40) {
+    px = road.x;
+    pz = road.z;
+    // face along the road in the way we are already going
+    const along = fx * road.dx + fz * road.dz;
+    const sgn = along >= 0 ? 1 : -1;
+    dx = road.dx * sgn;
+    dz = road.dz * sgn;
+  } else {
+    px = 0;
+    pz = 0;
+    dx = 1;
+    dz = 0;
+  }
+  // right-hand lane of the chosen travel direction
+  const r = { x: dz, z: -dx };
+  target.reset(
+    new THREE.Vector3(px + r.x * CITY.lane, 0.48, pz + r.z * CITY.lane),
+    new THREE.Quaternion().setFromUnitVectors(
+      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(dx, 0, dz),
+    ),
+  );
+  target.drivetrain.gear = 1;
+  target.turnSignal = 0;
+  chase.snap(target);
+  world.step();
+}
+
 // --------------------------------------------------------------------- input
 const input = new Input();
 const hud = new Hud();
+// Engine audio for the whole field (started on the start-button gesture).
+const engineAudio = new EngineAudio();
+// audio must start from a user gesture; keep the resume call available later
+document.addEventListener('pointerdown', () => engineAudio.resume(), { passive: true });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) engineAudio.resume();
+});
 hud.setAssist('tc', car.assists.tc);
 hud.setAssist('esc', car.assists.esc);
 hud.el.abs.textContent = 'LOCK';
 
-input.on('respawn', () => respawn());
-input.on('camera', () => chase.cycle());
-input.on('tc', () => {
+input.on('respawn', () => {
+  if (cityMode) {
+    // back on the nearest road lane - for whichever car you hold
+    respawnCity(cityFocus >= 0 && cityField ? cityField[cityFocus].car : car);
+    return;
+  }
+  respawn();
+});
+
+const cammodeEl = document.getElementById('cammode');
+function cycleCamera() {
+  if (cityMode) {
+    chase.cycle();
+    hud.setCityCam(CITY_CAM_LABELS[chase.mode]);
+    return;
+  }
+  if (spectate) {
+    const mode = spectator.cycle();
+    hud.setCamMode(spectator.label);
+    document.body.classList.toggle('is-cinematic', mode === 'cinematic');
+  } else {
+    chase.cycle();
+  }
+}
+function cycleFocus() {
+  if (cityMode) {
+    // -1 = your car, then GRAB each AI traffic car in turn (you drive it),
+    // then back to you
+    const n = (cityField || opponents).length;
+    const prev = cityFocus;
+    cityFocus = cityFocus >= n - 1 ? -1 : cityFocus + 1;
+    // the car you let go re-anchors its AI to where you left it: fresh
+    // route from the real pose, no stale light/stop state (the car itself
+    // is not moved - no teleport)
+    if (prev >= 0 && cityField[prev]) cityField[prev].driver.reanchor();
+    chase.snap(cityFocusCar());
+    return;
+  }
+  if (!spectate || opponents.length === 0) return;
+  focusIdx = (focusIdx + 1) % opponents.length;
+  spectator.refocus(opponents[focusIdx].car);
+}
+input.on('camera', cycleCamera);
+input.on('focus', cycleFocus);
+// touch port of the C / T / Y keys (this game is primarily played on phones)
+document.getElementById('btn-cam')?.addEventListener('click', cycleCamera);
+document.getElementById('btn-car')?.addEventListener('click', cycleFocus);
+// the sutradara row: in TV mode the user can take the director chair and
+// hard-cut between the feed cameras (HELI / CORN / START / STRAIGHT /
+// CRASH); AUTO hands the chair back to the q-learning director
+const shotsEl = document.getElementById('shots');
+const shotBtns = shotsEl ? [...shotsEl.querySelectorAll('.shot')] : [];
+if (shotsEl) {
+  for (const b of shotBtns) {
+    b.addEventListener('click', () => {
+      if (b.dataset.shot === 'auto') {
+        spectator.setAuto();
+        return;
+      }
+      spectator.manualCut(Number(b.dataset.shot));
+    });
+  }
+}
+document.getElementById('btn-cam-hud')?.addEventListener('click', cycleCamera);
+// touch buttons for city mode (KAMERA / KENDARAAN / KEMBALI)
+document.getElementById('city-btn-cam')?.addEventListener('click', cycleCamera);
+document.getElementById('city-btn-car')?.addEventListener('click', cycleFocus);
+document.getElementById('city-btn-back')?.addEventListener('click', () => location.reload());
+const toggleTC = () => {
   car.assists.tc = !car.assists.tc;
   hud.setAssist('tc', car.assists.tc);
-});
-input.on('esc', () => {
+};
+const toggleESC = () => {
   car.assists.esc = !car.assists.esc;
   hud.setAssist('esc', car.assists.esc);
-});
+};
+input.on('tc', toggleTC);
+input.on('esc', toggleESC);
+document.getElementById('pill-tc')?.addEventListener('click', toggleTC);
+document.getElementById('pill-esc')?.addEventListener('click', toggleESC);
 
 // --------------------------------------------------------------- start gate
 let started = false;
@@ -222,35 +604,133 @@ let running = true;
 
 const intro = document.getElementById('intro');
 const startBtn = document.getElementById('start');
+const startWatchBtn = document.getElementById('start-watch');
 
-function begin() {
+/**
+ * Switch the race world to the rallycross circuit: build its visuals on
+ * first use, retarget every AI to the new racing line / braking profile
+ * (the gravel sections are baked into it), and park the field on the new
+ * grid. The circuit world stays alive (hidden) so nothing is rebuilt.
+ */
+function activateRally() {
+  if (!rallyTrack) {
+    rallyTrack = createTrack(scene, TRACKS.rally);
+    // no pit lane / building / grandstands at the RX venue, but the
+    // tyre barriers + trees follow the new curve
+    rallyScenery = createScenery(scene, rallyTrack, [0x1f6bff, ...OPPONENT_COLORS], {
+      skipPit: true,
+    });
+  }
+  track = rallyTrack;
+  refreshHeliPatrol();
+  // the broadcast helis reposition over the new venue (no 300 m glide)
+  const hs = gridPose(0, 0, 0);
+  heli1.snap(new THREE.Vector3(hs.pos.x, 26, hs.pos.z), new THREE.Vector3(hs.pos.x, 0, hs.pos.z + 20));
+  heli2.snap(new THREE.Vector3(hs.pos.x, 48, hs.pos.z), new THREE.Vector3(hs.pos.x, 0, hs.pos.z + 20));
+  circuitTrack.group.visible = false;
+  sceneryGroup.visible = false;
+  rallyTrack.group.visible = true;
+  rallyScenery.visible = true;
+  for (const o of opponents) o.driver.retarget(rallyTrack);
+  chase.track = rallyTrack;
+  spectator.track = rallyTrack;
+  // standing start on the rally grid (u = 0 = the new start line)
+  const slot = gridPose(0, 0, 0);
+  car.reset(slot.pos, slot.q);
+  car.grip = 1;
+  playerU = 0;
+}
+
+function begin(mode = 'drive') {
   if (started) return;
   started = true;
+  spectate = mode === 'spectate' || mode === 'rally-spectate';
+  cityMode = mode === 'city';
+  const rallyMode = mode === 'rally' || mode === 'rally-spectate';
+  // this call comes from a click/touch - the moment the browser lets audio in
+  engineAudio.start();
   if (intro) intro.classList.add('is-hidden');
   hud.show();
   document.body.classList.add('is-playing');
+  if (cityMode) {
+    setupCity();
+    sessionTime = 0;
+    clock.last = performance.now();
+    return;
+  }
+  if (rallyMode) activateRally();
+  if (spectate) {
+    // the player's car becomes the 11th AI car: same Vehicle, same driver
+    // class, just a different paint. The field races itself.
+    const driver = new AIDriver(car, track, {
+      enabled: true,
+      pace: 1.0,
+      lineScale: 0.97,
+      laneBias: 0,
+      laneOffset: 0,
+      parity: 0,
+    }, world);
+    driver.u = 0;
+    opponents.push({ car, mesh: carMesh, driver, laneOffset: 0, isPlayer: true });
+    race.laps = opponents.map(() => 0);
+    race.prevU = opponents.map(() => 0);
+    race.progress = opponents.map(() => 0);
+    document.body.classList.add('is-spectate');
+    spectator.enabled = true;
+    hud.setCamMode(spectator.label);
+    hud.buildStandings(opponents.map((o, i) => ({
+      name: o.isPlayer ? 'YOU' : String(i).padStart(2, '0'),
+      color: o.isPlayer ? 0x1f6bff : OPPONENT_COLORS[i],
+    })));
+  }
   sessionTime = 0;
   respawn();
   clock.last = performance.now();
 }
 
-if (startBtn) {
-  startBtn.addEventListener('click', begin, { passive: true });
-  startBtn.addEventListener('touchend', (e) => {
+function bindStart(el, mode) {
+  if (!el) return;
+  el.addEventListener('click', () => begin(mode), { passive: true });
+  el.addEventListener('touchend', (e) => {
     e.preventDefault();
-    begin();
+    begin(mode);
   }, { passive: false });
 }
-input.on('start', begin);
+bindStart(startBtn, 'drive');
+bindStart(startWatchBtn, 'spectate');
+bindStart(document.getElementById('start-rally-watch'), 'rally-spectate');
+bindStart(document.getElementById('start-city'), 'city');
+bindStart(document.getElementById('start-rally'), 'rally');
+input.on('start', () => begin('drive'));
 
 // handy for headless screenshots / automated checks
 const params = new URLSearchParams(location.search);
 const autoThrottle = params.get('throttle');
 const autoSteer = Number(params.get('steer') ?? 0);
-if (params.has('auto')) setTimeout(begin, 30);
+if (params.has('auto')) {
+  const am = params.get('mode');
+  setTimeout(
+    () =>
+      begin(
+        am === 'spectate'
+          ? 'spectate'
+          : am === 'rally-spectate'
+            ? 'rally-spectate'
+            : am === 'city'
+              ? 'city'
+              : am === 'rally'
+                ? 'rally'
+                : 'drive',
+      ),
+    30,
+  );
+}
 if (params.has('cam')) chase.mode = Number(params.get('cam'));
 
-document.getElementById('respawn').addEventListener('click', () => respawn());
+document.getElementById('respawn').addEventListener('click', () => {
+  if (cityMode) respawnCity(cityFocus >= 0 && cityField ? cityField[cityFocus].car : car);
+  else respawn();
+});
 
 // -------------------------------------------------------------- 0-100 timing
 let launchState = 'armed';
@@ -283,6 +763,50 @@ function trackLaunch(dt, tm) {
 // ------------------------------------------------------------------ respawn
 const _nearest = new THREE.Vector3();
 const _tan = new THREE.Vector3();
+
+// per-frame surface grip for the player's car: an incremental search around
+// the last known u on the track sample cache (cheaper than nearestOnTrack,
+// which the R button alone can afford). The AI cars refresh their grip
+// inside AIDriver.update.
+let playerU = 0;
+const _pPos = new THREE.Vector3();
+function playerSurfaceGrip() {
+  const samples = track._aiSamples;
+  if (!samples) return 1;
+  const t = car.body.translation();
+  _pPos.set(t.x, 0, t.z);
+  const n = samples.length;
+  let bestD = Infinity;
+  let bestIdx = 0;
+  const center = Math.floor(playerU * n);
+  for (let k = -60; k <= 60; k++) {
+    const idx = (center + k + n) % n;
+    const s = samples[idx];
+    const dx = s.x - _pPos.x;
+    const dz = s.z - _pPos.z;
+    const d = dx * dx + dz * dz;
+    if (d < bestD) {
+      bestD = d;
+      bestIdx = idx;
+    }
+  }
+  if (bestD > 90 * 90) {
+    // far off the road: global search
+    bestD = Infinity;
+    for (let idx = 0; idx < n; idx++) {
+      const s = samples[idx];
+      const dx = s.x - _pPos.x;
+      const dz = s.z - _pPos.z;
+      const d = dx * dx + dz * dz;
+      if (d < bestD) {
+        bestD = d;
+        bestIdx = idx;
+      }
+    }
+  }
+  playerU = bestIdx / n;
+  return track.surfaceAt ? track.surfaceAt(playerU) : 1;
+}
 
 function nearestOnTrack(pos) {
   // coarse arc-length search; the track is ~1.3 km so 600 samples is plenty
@@ -337,12 +861,22 @@ function respawn() {
     o.driver._closing = 0;
     o.driver.sensors._cooldown = 0;
     o.driver.sensors._empty();
+    if (spectate) {
+      race.laps[i] = 0;
+      race.prevU[i] = o.driver.u;
+      race.progress[i] = o.driver.u;
+    }
   }
   skidMarks.reset();
   tireSmoke.reset();
   aiTick = 0;
   world.step();
-  chase.snap(car);
+  if (spectate) {
+    // snap the spectator camera onto the field (focus car on the next frame)
+    spectator.initialised = false;
+  } else {
+    chase.snap(car);
+  }
   launchState = 'armed';
 }
 
@@ -361,6 +895,35 @@ document.addEventListener('visibilitychange', () => {
   running = !document.hidden;
   clock.last = performance.now();
 });
+
+// ------------------------------------------------------- spectator race state
+let lastStandingsAt = 0;
+
+/** Track laps/progress for every car in the field (spectator mode). */
+function refreshRace() {
+  let leader = 0;
+  for (let i = 0; i < opponents.length; i++) {
+    const u = opponents[i].driver.u;
+    const p = race.prevU[i];
+    if (p > 0.85 && u < 0.15) race.laps[i]++;
+    else if (p < 0.15 && u > 0.85) race.laps[i] = Math.max(0, race.laps[i] - 1);
+    race.prevU[i] = u;
+    race.progress[i] = race.laps[i] + u;
+    if (i > 0 && race.progress[i] > race.progress[leader]) leader = i;
+  }
+  lastLeaderIdx = leader;
+}
+
+function buildStandingsRows(focusNow) {
+  const order = opponents.map((_, i) => i);
+  order.sort((a, b) => race.progress[b] - race.progress[a]);
+  return order.map((idx, rank) => ({
+    idx,
+    rank,
+    lap: race.laps[idx] + 1,
+    isFocus: idx === focusNow,
+  }));
+}
 
 // --------------------------------------------------------------- main loop
 const clock = { last: performance.now() };
@@ -383,22 +946,58 @@ function frame(now) {
   clock.last = now;
 
   let state = idle;
+  let focusCar = car;
+  let focusDriver = null;
+  // city: KENDARAAN (X) lets you grab any traffic car - you drive it and
+  // its AI stands down; leaving it parks it where it stopped.
+  // Function scope (not inside `if (started)`) because the audio block
+  // below that gate reads it every frame too.
+  const driveCar =
+    cityMode && cityFocus >= 0 && cityField ? cityField[cityFocus].car : car;
   if (started) {
-    state = input.update(dt);
-    if (autoThrottle !== null) {
-      state.throttle = Number(autoThrottle) || 1;
-      state.steer = autoSteer;
+    if (!spectate) {
+      state = input.update(dt);
+      if (autoThrottle !== null) {
+        state.throttle = Number(autoThrottle) || 1;
+        state.steer = autoSteer;
+      }
     }
     sessionTime += dt;
+    if (cityMode) cityTime += dt;
 
-    // fixed-step physics with a spiral-of-death guard
+    // fixed-step physics with a spiral-of-death guard. In spectator mode the
+    // player's car is in `opponents` (the 11th AI), so the single loop below
+    // drives every car in the field. In drive and city modes the player's
+    // car is driven by the input; in city mode the loop below also drives
+    // the 10 autonomous traffic cars.
     accumulator += dt;
     let steps = 0;
     while (accumulator >= FIXED_DT && steps < 8) {
-      car.update(FIXED_DT, state);
+      if (!spectate) driveCar.update(FIXED_DT, state);
       if ((aiTick & 1) === 0) {
-        for (let i = 0; i < opponents.length; i++) {
-          const o = opponents[i];
+        const field = cityMode ? cityField : opponents;
+        if (cityMode) {
+          for (let i = 0; i < field.length; i++) {
+            const o = field[i];
+            const t = o.car.body.translation();
+            const q = o.car.body.rotation();
+            cityFleet.list[i].x = t.x;
+            cityFleet.list[i].z = t.z;
+            cityFleet.list[i].dx = 2 * (q.x * q.z + q.y * q.w);
+            cityFleet.list[i].dz = 1 - 2 * (q.x * q.x + q.y * q.y);
+          }
+          // the player's car is traffic to the AI drivers
+          const pt = car.body.translation();
+          const pq = car.body.rotation();
+          const pe = cityFleet.list[field.length];
+          pe.x = pt.x;
+          pe.z = pt.z;
+          pe.dx = 2 * (pq.x * pq.z + pq.y * pq.w);
+          pe.dz = 1 - 2 * (pq.x * pq.x + pq.y * pq.y);
+        }
+        for (let i = 0; i < field.length; i++) {
+          if (cityMode && i === cityFocus) continue; // you're driving this one
+          const o = field[i];
           const aiState = o.driver.update(FIXED_DT * 2);
           o.car.update(FIXED_DT * 2, aiState);
         }
@@ -410,8 +1009,85 @@ function frame(now) {
     }
     if (steps === 8) accumulator = 0;
 
+    // surface grip under the player's tyres (rallycross gravel)
+    if (!cityMode) car.grip = playerSurfaceGrip();
+
     trackLaunch(dt, car.telemetry);
-    hud.update(car, sessionTime);
+
+    if (spectate) {
+      refreshRace();
+      const fi = spectator.mode === 'tv' ? lastLeaderIdx : focusIdx;
+      focusCar = opponents[fi].car;
+      focusDriver = opponents[fi].driver;
+      hud.update(focusCar, sessionTime);
+      if (performance.now() - lastStandingsAt > 250) {
+        lastStandingsAt = performance.now();
+        hud.updateStandings(buildStandingsRows(fi));
+        // the TV/cinematic labels change shot-to-shot, not just on C
+        hud.setCamMode(spectator.label);
+        if (shotsEl) {
+          const show = started && spectator.mode === 'tv' && !cityMode;
+          shotsEl.classList.toggle('shots--on', show);
+          if (show) {
+            for (const b of shotBtns) {
+              const v = b.dataset.shot;
+              if (v === 'auto') {
+                b.classList.toggle('shot--on', !spectator.manual);
+                continue;
+              }
+              const idx = Number(v);
+              b.classList.toggle('shot--on', spectator.manual && spectator.shot === idx);
+              if (idx === SHOTS.CRASH) b.disabled = !spectator._incidentLive;
+            }
+          }
+        }
+      }
+    } else if (cityMode) {
+      if (cityFocus < 0) {
+        // the player's own car: live speed + steering intent (the amber
+        // indicators on car #1 follow the same rule)
+        const st = state.steer;
+        hud.updateCity({
+          speedKmh: car.telemetry.speedKmh,
+          turn: st > 0.3 ? 'KANAN' : st < -0.3 ? 'KIRI' : 'LANJUT',
+          dist: null,
+          dest: '—',
+          light: null,
+          carLabel: 'MOBIL KAMU',
+        });
+        car.turnSignal = st > 0.3 ? 1 : st < -0.3 ? -1 : 0;
+      } else {
+        const o = cityField[cityFocus];
+        const d = o.driver;
+        // you're holding this car: indicators + turn text come from YOUR
+        // steering; its route info stays on the HUD until you let it go
+        const st = state.steer;
+        o.car.turnSignal = st > 0.3 ? 1 : st < -0.3 ? -1 : 0;
+        let turn = st > 0.3 ? 'KANAN' : st < -0.3 ? 'KIRI' : 'LANJUT';
+        let dist = null;
+        let light = null;
+        let dest = '—';
+        if (d && d.route) {
+          dest = d.route.dest ? d.route.dest.name : '—';
+          const stop = d.route.stops[d.stopIdx];
+          if (stop) {
+            const ds = stop.s - d.s;
+            if (ds < 70) light = cityLights.lightFor(stop.node, stop.axis, cityTime);
+          }
+        }
+        hud.updateCity({
+          speedKmh: o.car.telemetry.speedKmh,
+          turn,
+          dist,
+          dest,
+          light,
+          carLabel: 'MOBIL ' + String(cityFocus + 2).padStart(2, '0'),
+        });
+      }
+      if (cityRef) cityRef.updateLights(cityLights, cityTime);
+    } else {
+      hud.update(car, sessionTime);
+    }
   }
 
   const pVis = car.body.translation();
@@ -419,30 +1095,117 @@ function frame(now) {
   carMesh.root.position.set(pVis.x, pVis.y, pVis.z);
   carMesh.root.quaternion.set(qVis.x, qVis.y, qVis.z, qVis.w);
 
-  for (let i = 0; i < opponents.length; i++) {
-    const o = opponents[i];
-    const op = o.car.body.translation();
-    const oq = o.car.body.rotation();
-    o.mesh.root.position.set(op.x, op.y, op.z);
-    o.mesh.root.quaternion.set(oq.x, oq.y, oq.z, oq.w);
-    o.mesh.update(o.car);
+  {
+    const field = cityMode ? cityField : opponents;
+    for (let i = 0; i < field.length; i++) {
+      const o = field[i];
+      const op = o.car.body.translation();
+      const oq = o.car.body.rotation();
+      o.mesh.root.position.set(op.x, op.y, op.z);
+      o.mesh.root.quaternion.set(oq.x, oq.y, oq.z, oq.w);
+      o.mesh.update(o.car);
+    }
   }
 
   carMesh.update(car);
   skidMarks.update(car);
   tireSmoke.update(dt, car);
-  chase.update(dt, car);
+  if (started && spectate) spectator.update(dt, focusCar, focusDriver, opponents, race);
+  else if (cityMode) chase.update(dt, cityFocusCar());
+  else if (!spectate) chase.update(dt, car);
 
-  // shadow frustum follows the car
-  const p = car.body.translation();
+  // ------------------------------------------------- broadcast helicopters
+  {
+    const on = !cityMode; // no broadcast in the city
+    const tv = started && spectator.mode === 'tv';
+    // the heli the TV camera is mounted on hides its airframe (the nose
+    // PTZ would leak fuselage/rotor into the frame); the other heli stays
+    // fully visible in the shot
+    heli1.heli.root.visible = on && !(tv && spectator.shot === SHOTS.HELI);
+    heli2.heli.root.visible = on && !(tv && spectator.shot === SHOTS.CRASH);
+    if (on) {
+      // heli 1: the director's anchor while the HELI shot is live, or
+      // the standby anchor over its last broadcast car while the feed
+      // is on another camera (it holds position like a real chopper and
+      // waits - the next HELI cut is already framed); otherwise a
+      // rear-quarter follow on the leader (spectate) or the player car
+      let a1 = tv ? spectator.tvHeli || spectator.tvHeliHold : null;
+      if (!a1) {
+        let followCar = car;
+        if (spectate && opponents.length && race.progress.length === opponents.length) {
+          let li = 0;
+          for (let i = 1; i < opponents.length; i++) {
+            if (race.progress[i] > race.progress[li]) li = i;
+          }
+          followCar = opponents[li].car;
+        }
+        const lp = followCar.body.translation();
+        const lq = followCar.body.rotation();
+        _hf.set(0, 0, 1).applyQuaternion(_hq.set(lq.x, lq.y, lq.z, lq.w));
+        _hf.y = 0;
+        if (_hf.lengthSq() < 1e-6) _hf.set(0, 0, 1);
+        _hf.normalize();
+        _ha.set(lp.x - _hf.x * 15, lp.y + 26, lp.z - _hf.z * 15);
+        _hl.set(lp.x + _hf.x * 4, lp.y + 0.5, lp.z + _hf.z * 4);
+        a1 = { pos: _ha, look: _hl };
+      }
+      heli1.update(dt, a1.pos, a1.look);
+      // heli 2: the incident anchor while the CRASH shot is live,
+      // otherwise a slow high flyover of the active circuit
+      const a2 = tv ? spectator.tvCrash : null;
+      if (a2) {
+        heli2.update(dt, a2.pos, a2.look);
+      } else {
+        // free flight: a slow lazy Lissajous over the field centre -
+        // not tied to the track, just staying high over the action
+        heliPatrolT += dt;
+        _ha.set(
+          heliPatrolC.x + Math.sin(heliPatrolT * 0.05) * 90,
+          44 + Math.sin(heliPatrolT * 0.11) * 7,
+          heliPatrolC.z + Math.sin(heliPatrolT * 0.037 + 1.3) * 90,
+        );
+        _hl.set(_ha.x, 0, _ha.z); // scanning straight down
+        heli2.update(dt, _ha, _hl);
+      }
+    }
+  }
+
+  // shadow frustum follows the visible car (city: the focused car)
+  const p = (cityMode ? cityFocusCar() : car).body.translation();
   sun.position.set(p.x + 55, p.y + 80, p.z + 35);
   sun.target.position.set(p.x, p.y, p.z);
   sun.target.updateMatrixWorld();
 
   scene.userData.sky.position.set(camera.position.x, 0, camera.position.z);
 
-  // fell off the world somehow? put it back on the circuit
-  if (p.y < -8) respawn();
+  // fell off the world somehow? put it back on the circuit (no falling in city)
+  if (!cityMode && p.y < -8) respawn();
+
+  // ------------------------------------------------------------- audio
+  // The listener sits at the camera (chase or broadcast) so engine sounds
+  // arrive from the right direction with a real doppler shift; every car in
+  // the field feeds its own chain each frame. In spectate mode the player's
+  // car is just the 11th opponent, so it is covered by the loop below.
+    if (started && engineAudio.ready) {
+      engineAudio.updateListener(dt, camera.position, camera.quaternion);
+      if (!spectate) {
+        engineAudio.updateCar(driveCar, true, driveCar.body.translation(), driveCar.body.linvel());
+      }
+    {
+      const field = cityMode ? cityField : opponents;
+      if (!field) return; // city setup failed - surface it via the error overlay
+      for (let i = 0; i < field.length; i++) {
+        if (cityMode && i === cityFocus) continue; // just updated as the main car
+        const o = field[i];
+        engineAudio.updateCar(
+          o.car,
+          spectate && !!o.isPlayer,
+          o.car.body.translation(),
+          o.car.body.linvel(),
+        );
+      }
+    }
+  }
 
   renderer.render(scene, camera);
 }
@@ -451,4 +1214,11 @@ carMesh.update(car);
 requestAnimationFrame(frame);
 
 // exposed for debugging from the console
-window.race3d = { car, opponents, world, scene, camera, chase, input, respawn, begin, track };
+window.race3d = {
+  car, opponents, world, scene, camera, chase, input, respawn, respawnCity, begin, track,
+  get cityMode() { return cityMode; },
+  get cityRef() { return cityRef; },
+  get cityLights() { return cityLights; },
+  get cityTime() { return cityTime; },
+  get cityFocus() { return cityFocus; },
+};

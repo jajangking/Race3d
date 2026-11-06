@@ -46,17 +46,19 @@ export class TireModel {
    * @param {number} load      vertical load on the contact patch (N)
    * @param {number} slipRatio kappa, (wheel speed - ground speed) / ground speed
    * @param {number} slipAngle alpha in radians
+   * @param {number} [grip=1] surface grip scale (1 = tarmac, 0.72 = gravel)
    * @returns {{fx:number, fy:number, usage:number, mu:number}}
    *          fx = force along the wheel's forward direction (N)
    *          fy = force along the wheel's lateral direction (N)
    */
-  evaluate(load, slipRatio, slipAngle) {
+  evaluate(load, slipRatio, slipAngle, grip = 1) {
     const { mu0, loadRef, loadSensitivity, peakSlipRatio } = this.cfg;
 
     if (load <= 1) return { fx: 0, fy: 0, usage: 0, mu: 0 };
 
-    // load sensitivity (exponent is negative -> more load, less grip)
-    const mu = mu0 * Math.pow(load / loadRef, -loadSensitivity);
+    // load sensitivity (exponent is negative -> more load, less grip),
+    // scaled by the surface (gravel drops peak mu ~28%)
+    const mu = mu0 * grip * Math.pow(load / loadRef, -loadSensitivity);
 
     const sx = slipRatio / peakSlipRatio;
     const sy = slipAngle / this.peakSlipAngle;

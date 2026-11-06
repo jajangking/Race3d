@@ -66,6 +66,10 @@ export class Input {
         case 'KeyH':
           this._emit('help');
           break;
+        case 'KeyX':
+        case 'KeyO':
+          this._emit('focus');
+          break;
         case 'Enter':
           this._emit('start');
           break;
@@ -260,10 +264,14 @@ export class Input {
     let brake = 0;
     let handbrake = false;
 
+    // Steering sign convention: POSITIVE steer input turns the car RIGHT
+    // (vehicle.js applies wheel.steer as _fwd = (sin, 0, cos) in body space,
+    // +X = right). The AI and the gamepad already follow this; the keyboard
+    // and touch slider used to be inverted (A turned the car right).
     const tLeft = this.touch.left || 0;
     const tRight = this.touch.right || 0;
-    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft') || tLeft > 0) steer += tLeft || 1;
-    if (this.keys.has('KeyD') || this.keys.has('ArrowRight') || tRight > 0) steer -= tRight || 1;
+    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft') || tLeft > 0) steer -= tLeft || 1;
+    if (this.keys.has('KeyD') || this.keys.has('ArrowRight') || tRight > 0) steer += tRight || 1;
 
     const now = performance.now();
     if (this.touch.throttle) {
@@ -326,7 +334,11 @@ export class Input {
       handbrake = handbrake || gp.handbrake;
     }
 
-    s.steer = Math.max(-1, Math.min(1, steer));
+    // PLAYER steering is flipped at the very end. In actual play (reported by
+    // the player, tested in the real game) the slider/keys felt left-right
+    // inverted, so the final player steer is negated. The AI does not use this
+    // class, so the field is unaffected.
+    s.steer = -Math.max(-1, Math.min(1, steer));
     s.throttle = throttle;
     s.brake = brake;
     s.handbrake = handbrake;
