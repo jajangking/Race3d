@@ -263,9 +263,12 @@ const heli1 = new HeliUnit(
   createHeliMesh({ stripe: 0xe23b2e }), // the follow heli (red stripe)
   new THREE.Vector3(track.start.x, 26, track.start.z),
 );
+// the incident heli flies at its own graceful pace (12 m/s): a crash
+// opens with a gentle glide, never a max-speed rush across the field
 const heli2 = new HeliUnit(
   createHeliMesh({ stripe: 0x2b6fe2 }), // the incident / patrol heli (blue)
   new THREE.Vector3(track.start.x, 44, track.start.z),
+  12,
 );
 scene.add(heli1.heli.root, heli2.heli.root);
 spectator.helics = [heli1, heli2];
@@ -577,6 +580,16 @@ if (shotsEl) {
       }
       spectator.manualCut(Number(b.dataset.shot));
     });
+  }
+}
+// the FOKUS row: point the WHOLE feed at a race position (P1..P5) -
+// every camera then shoots that car and whoever is with it; AUTO hands
+// subject-picking back to the q-learning director
+const focusEl = document.getElementById('focusrow');
+const focusBtns = focusEl ? [...focusEl.querySelectorAll('.foc')] : [];
+if (focusEl) {
+  for (const b of focusBtns) {
+    b.addEventListener('click', () => spectator.setFocusPos(Number(b.dataset.focus)));
   }
 }
 document.getElementById('btn-cam-hud')?.addEventListener('click', cycleCamera);
@@ -1041,6 +1054,15 @@ function frame(now) {
             }
           }
         }
+        if (focusEl) {
+          const show = started && spectator.mode === 'tv' && !cityMode;
+          focusEl.classList.toggle('shots--on', show);
+          if (show) {
+            for (const b of focusBtns) {
+              b.classList.toggle('shot--on', spectator.focusPos === Number(b.dataset.focus));
+            }
+          }
+        }
       }
     } else if (cityMode) {
       if (cityFocus < 0) {
@@ -1152,7 +1174,7 @@ function frame(now) {
       heli1.update(dt, a1.pos, a1.look);
       // heli 2: the incident anchor while the CRASH shot is live,
       // otherwise a slow high flyover of the active circuit
-      const a2 = tv ? spectator.tvCrash : null;
+      const a2 = tv ? spectator.tvCrash || spectator.tvCrashHold : null;
       if (a2) {
         heli2.update(dt, a2.pos, a2.look);
       } else {

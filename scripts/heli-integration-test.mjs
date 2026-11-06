@@ -100,7 +100,7 @@ function runOnce(seed) {
   // the two real broadcast helicopters (same wiring as main.js)
   const _s0 = track.curve.getPointAt(0);
   const heli1 = new HeliUnit(createHeliMesh({ stripe: 0xe23b2e }), new THREE.Vector3(_s0.x, 26, _s0.z));
-  const heli2 = new HeliUnit(createHeliMesh({ stripe: 0x2b6fe2 }), new THREE.Vector3(_s0.x, 44, _s0.z));
+  const heli2 = new HeliUnit(createHeliMesh({ stripe: 0x2b6fe2 }), new THREE.Vector3(_s0.x, 44, _s0.z), undefined, 12);
   c.helics = [heli1, heli2];
 
   // scratch anchors for the non-mounted states (same as main.js)
@@ -186,7 +186,7 @@ function runOnce(seed) {
       a1 = { pos: _ha, look: _hl };
     }
     heli1.update(dt, a1.pos, a1.look);
-    const a2 = tv ? c.tvCrash : null;
+    const a2 = tv ? c.tvCrash || c.tvCrashHold : null;
     if (a2) heli2.update(dt, a2.pos, a2.look);
     else {
       _ha.set(_s0.x + Math.sin(t * 0.05) * 90, 44 + Math.sin(t * 0.11) * 7, _s0.z + Math.sin(t * 0.037 + 1.3) * 90);
@@ -304,7 +304,7 @@ for (const seed of SEEDS) {
   ok(m.camErrMax < 0.75, `TV camera rides the nose PTZ (max err ${m.camErrMax.toFixed(2)} m = <= 1 frame of heli travel, game frame order)`);
   ok(m.heli1OnAir > 30 * 60, `heli 1 carried the HELI shot (frames: ${m.heli1OnAir})`);
   ok(m.speed1Max <= 34.5, `heli 1 stays under its own 33 m/s cap (max ${m.speed1Max.toFixed(1)} m/s)`);
-  ok(m.speed2Max <= 34.5, `heli 2 stays under its own 33 m/s cap (max ${m.speed2Max.toFixed(1)} m/s)`);
+  ok(m.speed2Max <= 13.5, `heli 2 stays under its own 12 m/s glide cap (max ${m.speed2Max.toFixed(1)} m/s - the elegant one)`);
   ok(m.visWrong === 0, `mounted-heli visibility rule holds every frame (violations: ${m.visWrong})`);
   if (m.downFrames + m.forwardFrames > 0) {
     const downPct = (100 * m.downFrames) / (m.downFrames + m.forwardFrames);

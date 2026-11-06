@@ -27,12 +27,22 @@ import { CAR } from '../vehicle/config.js';
  *             minor brushes only score at a cut boundary (usually losing,
  *             so the camera does not chase them), and a 14 s cooldown
  *             after each crash shot keeps a flurry of contacts from
- *             spamming the feed. The incident heli circles high above the
- *             contact point (OBB detection on the same cuboid as the
- *             physics colliders, 0.6 m lead-in margin). The user can also
- *             take the director chair: manualCut()/setAuto() hard-cut to
- *             any feed camera and hold it (no auto cuts, no pre-emption,
- *             no Q learning) until the AUTO button hands back.
+ *             spamming the feed. The incident heli flies at its own slow
+ *             pace (12 m/s - a gentle glide, never a max-speed rush) and
+ *             holds station high above the action while no incident is
+ *             live, so a crash opens already framed; on air it drifts
+ *             slowly above the contact point (about a 2 min period - an
+ *             elegant hold, not a brisk circle; OBB detection on the
+ *             same cuboid as the physics colliders, 0.6 m lead-in
+ *             margin). The user can also take the director chair:
+ *             manualCut()/setAuto() hard-cut to any feed camera and hold
+ *             it (no auto cuts, no pre-emption, no Q learning) until the
+ *             AUTO button hands back - and setFocusPos() points the
+ *             WHOLE feed at a race position (1-5): every camera then
+ *             shoots the car in that position and whoever is physically
+ *             with it (a packed 1-2-3 is one group shot - the heli pulls
+ *             back and lifts to frame the cluster - a lone leader a
+ *             single car), 0 = AUTO.
  *             Shot selection is epsilon-greedy with a freshness bonus so
  *             near-tie shots rotate instead of one dominating the feed;
  *             the reward is rank-based (was the on-screen car the most
@@ -68,7 +78,7 @@ const TV_SHOTS = [
   { name: 'CORN', fov: 38, dur: [8, 12] }, // PTZ mast at every corner
   { name: 'START', fov: 40, dur: [8, 12] }, // locked wide on the start grid
   { name: 'STRAIGHT', fov: 42, dur: [8, 12] }, // trackside PTZ on the main straight
-  { name: 'CRASH', fov: 55, dur: [4, 6] }, // the incident heli's nose PTZ
+  { name: 'CRASH', fov: 55, dur: [6, 9] }, // the incident heli's nose PTZ (slow drift)
 ];
 
 const CINE_SHOTS = [
@@ -92,6 +102,8 @@ const _anchorPos = new THREE.Vector3();
 const _anchorLook = new THREE.Vector3();
 const _heliHoldPos = new THREE.Vector3();
 const _heliHoldLook = new THREE.Vector3();
+const _crashHoldPos = new THREE.Vector3();
+const _crashHoldLook = new THREE.Vector3();
 const _mastRight = new THREE.Vector3();
 const _tA = new THREE.Vector3();
 const _orbitDir = new THREE.Vector3();
@@ -243,6 +255,13 @@ export class SpectatorCamera {
     this._lastScene = null; // last _scene() result (for button-driven cuts)
     this._lastFocus = null;
     this._incidentLive = false; // a body contact is live right now
+    // USER FOCUS: the race position the feed revolves around (1-based;
+    // 0 = AUTO = the director picks from the whole field). With a focus
+    // set, every camera shoots the car in that position and whoever is
+    // physically with it - a packed 1-2-3 reads as one group shot, a
+    // lone leader as a single car
+    this.focusPos = 0;
+    this.tvCrashHold = null; // incident heli standby anchor (pos/look)
     // the nose PTZ's pointing: a stable rear-quarter shot at the car,
     // with an occasional forward "from the heli" look for variety
     this._heliView = 'down';
@@ -263,7 +282,13 @@ export class SpectatorCamera {
   }
 
   get label() {
-    if (this.mode === 'tv') return 'TV·' + TV_SHOTS[this.shot].name + (this.manual ? ' (MANUAL)' : '');
+    if (this.mode === 'tv')
+      return (
+        'TV·' +
+        TV_SHOTS[this.shot].name +
+        (this.manual ? ' (MANUAL)' : '') +
+        (this.focusPos > 0 ? ' ·POS ' + this.focusPos : '')
+      );
     if (this.mode === 'cinematic') return 'CINE·' + CINE_SHOTS[this.cineShot % 4].name;
     return BASE_LABELS[this.mode];
   }
@@ -492,6 +517,7 @@ export class SpectatorCamera {
     this.tvHeli = null;
     this.tvHeliHold = null;
     this.tvCrash = null;
+    this.tvCrashHold = null;
     // heli standby: while the feed is on another camera, the chopper
     // keeps flying the anchor of its last broadcast car (a real heli
     // holds station over its target and waits) - the next HELI cut
@@ -554,7 +580,7 @@ export class SpectatorCamera {
       this._prevSubject = this._subject;
       this._prevShot = this.shot;
       this.shot = SHOTS.CRASH;
-      this.shotTimer = 4 + Math.random() * 2;
+      this.shotTimer = 6 + Math.random() * 3;
       this.initialised = false; // hard cut to the incident
       this._shotGen++;
       this._crashCoolUntil = this.time + 14;
@@ -578,9 +604,10 @@ export class SpectatorCamera {
       // next shot. A minor brush is NOT refreshed - it gets its short
       // look and the feed moves on (measured, not chased)
       if (incident && this._incidentRawWorth >= 0.8) this.shotTimer = Math.max(this.shotTimer, 1.5);
-      // the incident heli circles high above the contact point; the feed
-      // is read from its nose PTZ (see update())
-      this._crashAng += dt * 0.16;
+      // the incident heli drifts SLOWLY high above the contact point
+      // (about a 2 min period - an elegant hold, not a brisk circle);
+      // the feed is read from its nose PTZ (see update())
+      this._crashAng += dt * 0.05;
       this._crashShot(dt);
       _anchorPos.set(
         _center.x + Math.cos(this._crashAng) * 18,
@@ -589,6 +616,28 @@ export class SpectatorCamera {
       );
       _anchorLook.copy(_center);
       this.tvCrash = { pos: _anchorPos, look: _anchorLook };
+    }
+    // the incident heli's standby: while no crash is live it holds
+    // station high above the action the user cares about (the focus
+    // cluster's lead, else the current subject, else the leader) - so a
+    // real crash opens with the heli ALREADY over the action, gliding
+    // in gently at its slow pace instead of rushing across the field
+    if (this.shot !== SHOTS.CRASH && S) {
+      let holdEntry = null;
+      const cl = this._focusCluster(S);
+      if (cl) holdEntry = f[cl.idx];
+      else if (this._subjectEntry && this._subjectEntry.car) holdEntry = this._subjectEntry;
+      else holdEntry = f[S.order[0]];
+      if (holdEntry && holdEntry.car && holdEntry.car.body) {
+        this._subjectPose(holdEntry.car);
+        _crashHoldPos.set(
+          _center.x + Math.sin(this.time * 0.05 + 2.1) * 12,
+          _center.y + 30,
+          _center.z + Math.cos(this.time * 0.041) * 12,
+        );
+        _crashHoldLook.copy(_center);
+        this.tvCrashHold = { pos: _crashHoldPos, look: _crashHoldLook };
+      }
     }
     if (this._subject === null && S) {
       // first frame in TV: seat the subject for the opening shot (no cut)
@@ -621,7 +670,23 @@ export class SpectatorCamera {
       for (let i = 0; i < f.length; i++) {
         if ((S.interests.get(f[i].car) || 0) > it) rank++;
       }
-      this._shotSum += rank === 0 ? 1 : rank === 1 ? 0.7 : rank === 2 ? 0.45 : 0.25;
+      let pay = rank === 0 ? 1 : rank === 1 ? 0.7 : rank === 2 ? 0.45 : 0.25;
+      if (this.focusPos > 0 && this.shot !== SHOTS.CRASH) {
+        // user focus: going off the chosen cluster is off-brief, so it
+        // is penalised in the table (the director learns to stay put)
+        const cl = this._focusCluster(S);
+        if (cl) {
+          let inCl = false;
+          for (let k = 0; k < cl.cars.length; k++) {
+            if (f[cl.cars[k]].car === this._subject) {
+              inCl = true;
+              break;
+            }
+          }
+          if (!inCl) pay *= 0.4;
+        }
+      }
+      this._shotSum += pay;
       this._shotFrames++;
       if (this.shot === SHOTS.CRASH) {
         this._shotWorthSum += this._incidentWorth;
@@ -800,6 +865,34 @@ export class SpectatorCamera {
     return { state: sGap * 3 + sPack, interests, order };
   }
 
+  _focusCluster(S) {
+    // the cars the user's focus position revolves around: the car in
+    // that position plus everyone physically with it (<= 35 m along the
+    // track either way) - a packed 1-2-3 is one group, a lone leader is
+    // just one car
+    if (!this.focusPos || !S || !S.order.length) return null;
+    const r = this._race;
+    const L = this.track.length;
+    const idx = S.order[Math.min(this.focusPos, S.order.length) - 1];
+    const cars = [idx];
+    let spread = 0;
+    let relSum = 0;
+    let cnt = 1;
+    for (let i = 0; i < S.order.length; i++) {
+      if (i === idx) continue;
+      let d = (r.progress[i] - r.progress[idx]) * L;
+      if (d > L / 2) d -= L;
+      else if (d < -L / 2) d += L;
+      if (Math.abs(d) <= 35) {
+        cars.push(i);
+        relSum += d;
+        cnt++;
+        if (Math.abs(d) > spread) spread = Math.abs(d);
+      }
+    }
+    return { idx, cars, spread, relSum, cnt };
+  }
+
   _pickSubject(a, S, focusCar) {
     const f = this._field;
     if (!f || !f.length) return focusCar;
@@ -814,6 +907,53 @@ export class SpectatorCamera {
       const last = this._seen.get(car);
       return last !== undefined && now - last < 20;
     };
+    // USER FOCUS: every camera (the incident cam is the exception - it
+    // follows the contact) shoots the cluster around the chosen
+    // position. The rotation/cooling rules step aside: the user is
+    // pointing the feed
+    if (this.focusPos > 0 && a !== SHOTS.CRASH) {
+      const cl = this._focusCluster(S);
+      if (cl) {
+        if (a === SHOTS.START) {
+          // the grid cam frames the cluster member crossing the line
+          let best = Infinity;
+          let car = f[cl.idx].car;
+          for (let k = 0; k < cl.cars.length; k++) {
+            const i = cl.cars[k];
+            const uu = f[i].driver ? f[i].driver.u : 0;
+            const d = Math.min(wrap(uu), wrap(1 - uu)) * this.track.length;
+            if (d < best) {
+              best = d;
+              car = f[i].car;
+            }
+          }
+          return car;
+        }
+        if (a === SHOTS.STRAIGHT) {
+          // the straight cam: the cluster member actually on the
+          // straight (if the cluster is not there yet, the focus car)
+          const st = this._ensureStraight();
+          if (st) {
+            let best = -Infinity;
+            let car = null;
+            for (let k = 0; k < cl.cars.length; k++) {
+              const i = cl.cars[k];
+              const e = f[i];
+              const it = S.interests.get(e.car) || 0;
+              const uu = e.driver ? e.driver.u : 0;
+              if (st.contains(uu) && it > best) {
+                best = it;
+                car = e.car;
+              }
+            }
+            if (car) return car;
+          }
+          return f[cl.idx].car;
+        }
+        // HELI / CORN: the car sitting in the chosen position
+        return f[cl.idx].car;
+      }
+    }
     if (a === SHOTS.START) {
       // grid cam: frame the car crossing the line
       let best = Infinity;
@@ -1304,7 +1444,22 @@ export class SpectatorCamera {
     // framing stays stable and the heli's flight is calm. Shared by the
     // live HELI shot and the off-air standby hold.
     this._heliSway += dt;
-    const uB = wrap(entry.driver.u - 22 / this.track.length);
+    // USER FOCUS GROUP SHOT: when the chosen position has company (a
+    // packed 1-2-3), frame the whole cluster - fly behind the pack's
+    // centre of mass, pulled back and lifted by how wide the pack is;
+    // a lone car keeps the classic 22 m / 12 m rear-quarter
+    let uu = entry.driver.u;
+    let back = 22;
+    let up = 12;
+    const S = this._lastScene;
+    const cl = this.focusPos > 0 && S ? this._focusCluster(S) : null;
+    if (cl && cl.cars.length > 1) {
+      const s = Math.min(45, cl.spread);
+      uu = uu + cl.relSum / cl.cnt / this.track.length;
+      back = 22 + s * 1.15;
+      up = 12 + s * 0.35;
+    }
+    const uB = wrap(uu - back / this.track.length);
     this.track.curve.getPointAt(uB, outPos);
     this.track.curve.getTangentAt(uB, _tA);
     _tA.y = 0;
@@ -1312,7 +1467,7 @@ export class SpectatorCamera {
     const side = Math.sin(this._heliSway * ((2 * Math.PI) / 45) + this._heliSwayPhase) * 5;
     outPos.x += _tA.z * side;
     outPos.z += -_tA.x * side;
-    outPos.y = _center.y + 12;
+    outPos.y = _center.y + up;
     // the nose PTZ: a stable shot at the car, with an occasional forward
     // "from the heli" look down the track
     this._heliViewT -= dt;
@@ -1504,6 +1659,29 @@ export class SpectatorCamera {
     this.manual = false;
     // a fresh duration: the next boundary is a normal director decision
     this.shotTimer = TV_SHOTS[this.shot].dur[0];
+  }
+
+  /**
+   * USER FOCUS: point the whole feed at a race position (1-based;
+   * 0 = AUTO, the q-learning director picks from the field again). The
+   * feed then revolves around the car in that position and whoever is
+   * physically with it - a packed 1-2-3 is one group shot, a lone
+   * leader a single car. The live shot re-seats its subject
+   * immediately (a smooth reframe, not a hard cut); every later cut -
+   * auto or manual - keeps shooting the cluster.
+   */
+  setFocusPos(p) {
+    const n = this._field ? this._field.length : 5;
+    const np = THREE.MathUtils.clamp(Math.round(p) || 0, 0, Math.min(5, n));
+    if (np === this.focusPos) return;
+    this.focusPos = np;
+    const S = this._lastScene;
+    if (S && this.mode === 'tv' && this.shot !== SHOTS.CRASH) {
+      this._prevSubject = this._subject;
+      this._subject = this._pickSubject(this.shot, S, this._lastFocus);
+      this._seatSubject();
+      if (this.shot === SHOTS.HELI) this._heliHoldEntry = this._subjectEntry;
+    }
   }
 
   _setDamp(kx, ky) {

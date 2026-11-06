@@ -656,6 +656,14 @@ body.is-spectate .spectate-ui {
   border-color: var(--accent, #e23b2e);
   color: #fff;
 }
+.foc-label {
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  color: var(--muted, #8a93a6);
+  align-self: center;
+  padding: 0 2px;
+}
 .cammode {
   font-family: var(--mono);
   font-size: 10px;

@@ -18,7 +18,7 @@
 //   E: recover mode without contact is NOT a crash; in clean air the
 //      HELI leads and every location cam (CORN / START / STRAIGHT)
 //      keeps a real slice of the feed
-//   F: MINOR contact (back-of-pack brush, low value): measured and NOT
+//   G: user focus position (P1..P5): the WHOLE feed revolves around the
 //      chased - no mid-shot pre-emption at detection (the shot timer is
 //      pinned in the window, so any cut there would be a pre-emption),
 //      and the crash shot stays a small share of the feed
@@ -495,6 +495,83 @@ console.log('F: minor back-of-pack brush is measured, NOT chased');
   // the crash column may have been reinforced by measured (boundary)
   // cuts, but it must stay inside the clamp
   ok(Array.from(c.Q).every((v) => v >= -1.1 - 1e-9 && v <= 1.1 + 1e-9), 'Q table inside the clamp');
+}
+
+// ------------------------------------------------------------ Test G
+console.log('G: user focus position - the whole feed revolves around that car');
+{
+  delete store['race3d-qdirector-v4'];
+  // 11 cars: the top three run as a locked group (12 m and 24 m apart -
+  // a real 1-2-3 battle), the rest 150 m apart behind. At t=30 the 2nd
+  // and 3rd cars drop away (120 m) so position 1 is LONE afterwards.
+  const cars = makeField(11);
+  cars.forEach((e, i) => {
+    e.pace = 32;
+    e.dist = i === 0 ? 0 : i === 1 ? -12 : i === 2 ? -24 : -(150 + (i - 3) * 150);
+    e.driver.u = (e.dist / track.length) % 1;
+  });
+  const c = cam();
+  let bad = 0;
+  let labelOk = 0;
+  let offCluster = 0;
+  const groupSet = new Set([cars[0].car, cars[1].car, cars[2].car]);
+  const heliGroupDist = []; // t 8-28 s: the 1-2-3 group is intact
+  const heliSoloDist = []; // t 48-280 s: position 1 is alone
+  const cornSubjects = new Set();
+  let reseatOk = null; // after setFocusPos(1) at t=10 the subject is in the group
+  let heliOnAirSince = null; // only frame the settled HELI (t+4 s after the cut)
+  for (let f = 0; f < 60 * 300; f++) {
+    const dt = 1 / 60;
+    const t = f / 60;
+    if (t === 10) c.setFocusPos(1); // the user points the feed at position 1
+    for (const e of cars) {
+      e.dist += e.pace * dt;
+      if (e === cars[1]) e.dist = t < 30 ? cars[0].dist - 12 : cars[0].dist - 120;
+      if (e === cars[2]) e.dist = cars[1].dist - 12;
+      e.driver.u = (e.dist / track.length) % 1;
+      setPose(e.car.body, e.driver.u);
+    }
+    c.update(dt, cars[0].car, cars[0].driver, cars, {
+      progress: cars.map((e) => e.dist / track.length),
+    });
+    if (t >= 10.5 && t < 11.5) reseatOk = reseatOk === null ? groupSet.has(c._subject) : reseatOk && groupSet.has(c._subject);
+    if (c.focusPos > 0 && c.label.includes('POS 1')) labelOk++;
+    // with a focus set the feed must never point at a car outside the
+    // chosen group (no crash contact happens in this clean run)
+    if (c.focusPos > 0 && c._subject && !groupSet.has(c._subject)) offCluster++;
+    const p = c.pos;
+    if (!isFinite(p.x + p.y + p.z) || p.y < -1 || p.y > 90) bad++;
+    // measure the ANCHOR (where the physical heli is ordered to fly -
+    // in the game the camera rides it exactly; the headless fallback
+    // camera lags a 32 m/s target by its damping constant, which would
+    // read as a false "wide shot")
+    if (c.shot === 0) {
+      if (heliOnAirSince === null) heliOnAirSince = t;
+      if (t - heliOnAirSince > 4 && c.tvHeli && c._subject && c._subject.body) {
+        const sp = c._subject.body.translation();
+        const d = c.tvHeli.pos.distanceTo(sp);
+        if (t >= 8 && t < 28) heliGroupDist.push(d);
+        if (t >= 48 && t < 280) heliSoloDist.push(d);
+      }
+    } else {
+      heliOnAirSince = null;
+    }
+    if (c.focusPos > 0 && c.shot === 1 && c._subject) cornSubjects.add(c._subject);
+  }
+  ok(bad === 0, `0 bad frames (got ${bad})`);
+  ok(reseatOk === true, 'setFocusPos(1) re-seats the live shot onto the group at once');
+  ok(labelOk > 0, 'the HUD label carries the active focus (TV·X ·POS 1)');
+  ok(offCluster === 0, `the feed never leaves the focused group (off-cluster frames: ${offCluster})`);
+  ok(cornSubjects.size === 1 && cornSubjects.has(cars[0].car),
+    `every corner shot frames the position-1 car (corn subjects: ${cornSubjects.size})`);
+  const g = heliGroupDist.slice().sort((a, b) => a - b);
+  const gMed = g.length ? g[Math.floor(g.length / 2)] : 0;
+  ok(g.length > 100 && gMed >= 38,
+    `a packed 1-2-3 is a GROUP shot - the heli pulls back to frame all three (anchor median ${gMed.toFixed(0)} m, a lone car sits at ~25 m)`);
+  const so = heliSoloDist.slice().sort((a, b) => a - b);
+  const soP90 = so.length ? so[Math.floor(so.length * 0.9)] : 999;
+  ok(so.length > 100 && soP90 < 30,
+    `a lone leader is a SINGLE shot - the heli returns to the tight rear-quarter (anchor p90 ${soP90.toFixed(0)} m)`);
 }
 
 console.log(failures === 0 ? '\nALL DIRECTOR TESTS PASS' : `\n${failures} FAILURES`);

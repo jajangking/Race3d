@@ -12,8 +12,8 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>RACE3D — raycast vehicle sim</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <script type="module" crossorigin src="./assets/index-Cv-QWouQ.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-DYKu5My3.css">
+    <script type="module" crossorigin src="./assets/index-B6U-fyAo.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-Cjo7_5vE.css">
   </head>
   <body>
     <canvas id="scene"></canvas>
@@ -63,6 +63,15 @@
         <button class="shot" data-shot="3" type="button">STRAIGHT</button>
         <button class="shot" data-shot="4" type="button">CRASH</button>
         <button class="shot shot--auto" data-shot="auto" type="button">AUTO</button>
+      </div>
+      <div class="shots" id="focusrow">
+        <span class="foc-label">FOKUS</span>
+        <button class="shot foc" data-focus="0" type="button">AUTO</button>
+        <button class="shot foc" data-focus="1" type="button">P1</button>
+        <button class="shot foc" data-focus="2" type="button">P2</button>
+        <button class="shot foc" data-focus="3" type="button">P3</button>
+        <button class="shot foc" data-focus="4" type="button">P4</button>
+        <button class="shot foc" data-focus="5" type="button">P5</button>
       </div>
       <div class="spectate-ui__btns">
         <button class="sbtn" id="btn-cam" type="button" title="Cycle camera (C)">CAM</button>
@@ -192,7 +201,7 @@
     </div>
 
     <!-- build tag: proves which bundle is actually loaded (cache check) -->
-    <div class="build-tag" id="buildTag">BUILD v15.3 · FEED 5 KAMERA + TOMBOL SUTRADARA (KAMU YANG PILIH)</div>
+    <div class="build-tag" id="buildTag">BUILD v15.4 · FOKUS POSISI (P1-P5, FEED MUTER DI KELUARGA MOBIL LO) + CRASH CAM ELEGAN</div>
 
   </body>
 </html>

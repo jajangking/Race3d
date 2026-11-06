@@ -104,7 +104,7 @@ export function createHeliMesh({ body = 0xf4f6f8, stripe = 0xe23b2e } = {}) {
  * the airframe (skids, rotors) never enters the picture.
  */
 export class HeliUnit {
-  constructor(heli, startPos, lookStart) {
+  constructor(heli, startPos, lookStart, maxSpeed = 33) {
     this.heli = heli;
     this.pos = startPos.clone();
     this.look = lookStart ? lookStart.clone() : new THREE.Vector3(startPos.x, 0, startPos.z + 20);
@@ -119,6 +119,7 @@ export class HeliUnit {
     this.nosePos = new THREE.Vector3();
     this.noseDist = 2.8; // just past the nose tip (the model is scaled 1.25)
     this.camHeight = 0.35;
+    this.maxSpeed = maxSpeed; // per-heli glide cap (follow: 33, incident: 12)
     this._updateNose();
   }
 
@@ -155,7 +156,7 @@ export class HeliUnit {
     // are gradual swoops, never jerks.
     _to.copy(anchorPos).sub(p);
     const d = _to.length();
-    const wantSpeed = THREE.MathUtils.clamp(d * 3.5, 0, 33);
+    const wantSpeed = THREE.MathUtils.clamp(d * 3.5, 0, this.maxSpeed);
     if (d > 1e-4) _to.multiplyScalar(wantSpeed / d);
     else _to.set(0, 0, 0);
     this._vel.lerp(_to, 1 - Math.exp(-dt / 0.8));
