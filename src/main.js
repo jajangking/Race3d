@@ -10,7 +10,7 @@ import { createCarMesh } from './render/carMesh.js';
 import { createSkidMarks } from './render/skidMarks.js';
 import { createTireSmoke } from './render/tireSmoke.js';
 import { ChaseCamera } from './render/chaseCamera.js';
-import { SpectatorCamera } from './render/spectatorCamera.js';
+import { SpectatorCamera, SHOTS } from './render/spectatorCamera.js';
 import { createHeliMesh, HeliUnit } from './render/heli.js';
 import { Input } from './input.js';
 import { Hud } from './hud.js';
@@ -563,6 +563,22 @@ input.on('focus', cycleFocus);
 // touch port of the C / T / Y keys (this game is primarily played on phones)
 document.getElementById('btn-cam')?.addEventListener('click', cycleCamera);
 document.getElementById('btn-car')?.addEventListener('click', cycleFocus);
+// the sutradara row: in TV mode the user can take the director chair and
+// hard-cut between the feed cameras (HELI / CORN / START / STRAIGHT /
+// CRASH); AUTO hands the chair back to the q-learning director
+const shotsEl = document.getElementById('shots');
+const shotBtns = shotsEl ? [...shotsEl.querySelectorAll('.shot')] : [];
+if (shotsEl) {
+  for (const b of shotBtns) {
+    b.addEventListener('click', () => {
+      if (b.dataset.shot === 'auto') {
+        spectator.setAuto();
+        return;
+      }
+      spectator.manualCut(Number(b.dataset.shot));
+    });
+  }
+}
 document.getElementById('btn-cam-hud')?.addEventListener('click', cycleCamera);
 // touch buttons for city mode (KAMERA / KENDARAAN / KEMBALI)
 document.getElementById('city-btn-cam')?.addEventListener('click', cycleCamera);
@@ -1009,6 +1025,22 @@ function frame(now) {
         hud.updateStandings(buildStandingsRows(fi));
         // the TV/cinematic labels change shot-to-shot, not just on C
         hud.setCamMode(spectator.label);
+        if (shotsEl) {
+          const show = started && spectator.mode === 'tv' && !cityMode;
+          shotsEl.classList.toggle('shots--on', show);
+          if (show) {
+            for (const b of shotBtns) {
+              const v = b.dataset.shot;
+              if (v === 'auto') {
+                b.classList.toggle('shot--on', !spectator.manual);
+                continue;
+              }
+              const idx = Number(v);
+              b.classList.toggle('shot--on', spectator.manual && spectator.shot === idx);
+              if (idx === SHOTS.CRASH) b.disabled = !spectator._incidentLive;
+            }
+          }
+        }
       }
     } else if (cityMode) {
       if (cityFocus < 0) {
@@ -1089,8 +1121,8 @@ function frame(now) {
     // the heli the TV camera is mounted on hides its airframe (the nose
     // PTZ would leak fuselage/rotor into the frame); the other heli stays
     // fully visible in the shot
-    heli1.heli.root.visible = on && !(tv && spectator.shot === 0);
-    heli2.heli.root.visible = on && !(tv && spectator.shot === 3);
+    heli1.heli.root.visible = on && !(tv && spectator.shot === SHOTS.HELI);
+    heli2.heli.root.visible = on && !(tv && spectator.shot === SHOTS.CRASH);
     if (on) {
       // heli 1: the director's anchor while the HELI shot is live, or
       // the standby anchor over its last broadcast car while the feed

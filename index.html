@@ -55,6 +55,14 @@
     <!-- spectator camera UI (AI vs AI mode) -->
     <div class="spectate-ui" id="spectate-ui">
       <div class="cammode" id="cammode">TV CAM</div>
+      <div class="shots" id="shots">
+        <button class="shot" data-shot="0" type="button">HELI</button>
+        <button class="shot" data-shot="1" type="button">CORN</button>
+        <button class="shot" data-shot="2" type="button">START</button>
+        <button class="shot" data-shot="3" type="button">STRAIGHT</button>
+        <button class="shot" data-shot="4" type="button">CRASH</button>
+        <button class="shot shot--auto" data-shot="auto" type="button">AUTO</button>
+      </div>
       <div class="spectate-ui__btns">
         <button class="sbtn" id="btn-cam" type="button" title="Cycle camera (C)">CAM</button>
         <button class="sbtn" id="btn-car" type="button" title="Cycle focus car (X)">CAR</button>
@@ -183,7 +191,7 @@
     </div>
 
     <!-- build tag: proves which bundle is actually loaded (cache check) -->
-    <div class="build-tag" id="buildTag">BUILD v15.2 · TV LEBIH TERFOKUS (SHOOT PANJANG + HELI HOLD POSITION)</div>
+    <div class="build-tag" id="buildTag">BUILD v15.3 · FEED 5 KAMERA + TOMBOL SUTRADARA (KAMU YANG PILIH)</div>
 
     <script type="module" src="./src/main.js"></script>
   </body>

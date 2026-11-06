@@ -626,6 +626,36 @@ body.is-spectate .spectate-ui {
   display: flex;
 }
 
+.shots {
+  display: none;
+  gap: 4px;
+  margin-top: 6px;
+}
+.shots--on {
+  display: flex;
+}
+.shot {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 9px;
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.shot:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.shot--on {
+  background: var(--accent, #e23b2e);
+  border-color: var(--accent, #e23b2e);
+  color: #fff;
+}
 .cammode {
   font-family: var(--mono);
   font-size: 10px;

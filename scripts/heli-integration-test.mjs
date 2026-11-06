@@ -161,9 +161,9 @@ function runOnce(seed) {
 
     const tv = c.mode === 'tv';
     heli1.heli.root.visible = true && !(tv && c.shot === 0);
-    heli2.heli.root.visible = true && !(tv && c.shot === 3);
+    heli2.heli.root.visible = true && !(tv && c.shot === 4);
     if (heli1.heli.root.visible !== !(tv && c.shot === 0)) m.visWrong++;
-    if (heli2.heli.root.visible !== !(tv && c.shot === 3)) m.visWrong++;
+    if (heli2.heli.root.visible !== !(tv && c.shot === 4)) m.visWrong++;
 
     // a new HELI shot started: sample the car distance 3 s later (the
     // shot must OPEN tight - no long transit across the field)
@@ -197,7 +197,7 @@ function runOnce(seed) {
     // ---- metrics ----
     const p = c.pos;
     if (!isFinite(p.x + p.y + p.z) || p.y < -1 || p.y > 90) m.bad++;
-    if (tv && (c.shot === 0 || c.shot === 3)) {
+    if (tv && (c.shot === 0 || c.shot === 4)) {
       const u = c.shot === 0 ? heli1 : heli2;
       m.camErrMax = Math.max(m.camErrMax, p.distanceTo(u.nosePos));
       if (c.shot === 0) {
@@ -290,7 +290,7 @@ function runOnce(seed) {
   return m;
 }
 
-const SEEDS = [11, 47, 131];
+const SEEDS = [11, 47, 149];
 let failures = 0;
 const ok = (cond, msg) => {
   console.log((cond ? '  PASS ' : '  FAIL ') + msg);
