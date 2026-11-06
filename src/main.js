@@ -268,7 +268,8 @@ const heli1 = new HeliUnit(
 const heli2 = new HeliUnit(
   createHeliMesh({ stripe: 0x2b6fe2 }), // the incident / patrol heli (blue)
   new THREE.Vector3(track.start.x, 44, track.start.z),
-  12,
+  undefined, // no fixed start look (derived from the position)
+  12, // its own slow glide cap (m/s)
 );
 scene.add(heli1.heli.root, heli2.heli.root);
 spectator.helics = [heli1, heli2];
